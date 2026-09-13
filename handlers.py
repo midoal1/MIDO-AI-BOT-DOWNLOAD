@@ -284,7 +284,7 @@ async def help_handler(message: Message):
     await message.answer(t["help"], parse_mode="HTML")
 
 
-@router.message(F.text)
+@router.message(F.text, ~F.text.startswith("/"))
 async def handle_video_link(message: Message):
     tg_lang = message.from_user.language_code
     is_new, user_count, ulang = register_user(message.from_user.id, tg_lang)
