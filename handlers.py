@@ -10,6 +10,7 @@ from aiogram.types import (
     FSInputFile, InputMediaPhoto
 )
 from downloader import extract_info, download_video_quality, download_audio, cleanup_file
+from database import register_user, increment_downloads, get_stats
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -18,6 +19,15 @@ URL_PATTERN = re.compile(r'https?://[^\s]+')
 
 # Memory cache for active video URLs
 URL_CACHE = {}
+
+
+async def update_bot_description(bot, user_count: int):
+    """Update bot short description dynamically with user count."""
+    try:
+        short_desc = f"👥 عدد المستخدمين: {user_count} | 🎬 تنزيل الفيديوهات والصوتيات بدون علامة مائية"
+        await bot.set_my_short_description(short_description=short_desc)
+    except Exception as e:
+        logger.warning(f"Could not update bot short description: {e}")
 
 
 async def safe_edit_status(message: Message, text: str, reply_markup=None):
@@ -34,8 +44,13 @@ async def safe_edit_status(message: Message, text: str, reply_markup=None):
 
 @router.message(CommandStart())
 async def start_handler(message: Message):
+    is_new, user_count = register_user(message.from_user.id)
+    if is_new:
+        await update_bot_description(message.bot, user_count)
+
     welcome_text = (
         "👋 <b>أهلاً بك في بوت تنزيل الفيديوهات والصوتيات الشامل!</b>\n\n"
+        f"👥 <b>إجمالي مستخدمي البوت حتى الآن:</b> <code>{user_count}</code> مستخدم\n\n"
         "🎬 <b>المنصات المدعومة:</b>\n"
         "• 🎵 <b>TikTok</b> (فيديوهات بدون علامة مائية + بوستات الصور 📸)\n"
         "• 🔴 <b>YouTube & Shorts</b>\n"
@@ -43,9 +58,26 @@ async def start_handler(message: Message):
         "• 🐦 <b>Twitter / X</b> & 📘 <b>Facebook</b>\n"
         "• 📌 <b>Pinterest</b> & جميع مواقع الفيديوهات الأخرى!\n\n"
         "💡 <b>كيفية الاستخدام:</b>\n"
-        "فقط قم بإرسال رابط أي فيديو، وسأعرض لك الصورة المصغرة مع خيارات اختيار الجودة أو تنزيل الصوت فقط بصيغة MP3!"
+        "فقط قم بإرسال رابط أي فيديو، وسأعرض لك الصورة المصغرة مع خيارات الجودة أو MP3!"
     )
     await message.answer(welcome_text, parse_mode="HTML")
+
+
+@router.message(Command("stats"))
+async def stats_handler(message: Message):
+    stats = get_stats()
+    user_count = stats["user_count"]
+    downloads = stats["total_downloads"]
+
+    await update_bot_description(message.bot, user_count)
+
+    stats_text = (
+        "📊 <b>إحصائيات البوت الحالية:</b>\n\n"
+        f"👥 <b>عدد المستخدمين المسجلين:</b> <code>{user_count}</code>\n"
+        f"📥 <b>إجمالي الفيديوهات والصوتيات المنزلة:</b> <code>{downloads}</code>\n\n"
+        "✨ تم تحديث الوصف التعريفي للبوت في تليجرام بنجاح!"
+    )
+    await message.answer(stats_text, parse_mode="HTML")
 
 
 @router.message(Command("help"))
@@ -62,6 +94,10 @@ async def help_handler(message: Message):
 
 @router.message(F.text)
 async def handle_video_link(message: Message):
+    is_new, user_count = register_user(message.from_user.id)
+    if is_new:
+        await update_bot_description(message.bot, user_count)
+
     urls = URL_PATTERN.findall(message.text)
     if not urls:
         await message.answer("⚠️ يرجى إرسال رابط فيديو صحيح لتتم معالجته.")
@@ -104,7 +140,6 @@ async def handle_video_link(message: Message):
         ]
     )
 
-    # Send Thumbnail Photo if available
     if thumb and (thumb.startswith("http://") or thumb.startswith("https://")):
         try:
             await status_msg.delete()
@@ -128,7 +163,7 @@ async def handle_download_option(callback: CallbackQuery):
         await callback.answer("⚠️ طلب غير صالحة.", show_alert=True)
         return
 
-    mode = parts[1]  # "720", "480", or "mp3"
+    mode = parts[1]
     url_id = parts[2]
 
     url = URL_CACHE.get(url_id)
@@ -156,6 +191,8 @@ async def handle_download_option(callback: CallbackQuery):
             await safe_edit_status(callback.message, "❌ <b>عذراً، تعذر تنزيل الملف.</b>\nقد يتجاوز حجم الملف الحد المسموح (50 ميجابايت) أو أن الرابط غير مدعوم.")
             return
 
+        increment_downloads()
+
         title = html.escape(download_data.get("title", ""))
         author = html.escape(download_data.get("author", ""))
         platform = html.escape(download_data.get("platform", ""))
@@ -166,7 +203,6 @@ async def handle_download_option(callback: CallbackQuery):
         caption += f"🌐 النوع: {platform}\n\n"
         caption += "🤖 تم التحميل بواسطة @MIDOALIAIBOT"
 
-        # Handle TikTok Photo Post / Slideshow
         if download_data.get("type") == "photos":
             await safe_edit_status(callback.message, "📤 <b>جاري رفع ألبوم الصور إلى تليجرام...</b>")
             image_paths = download_data.get("image_paths", [])
