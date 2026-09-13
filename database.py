@@ -14,7 +14,14 @@ def load_db() -> dict:
                 return json.load(f)
         except Exception as e:
             logger.error(f"Error loading database.json: {e}")
-    return {"users": [], "user_langs": {}, "total_downloads": 0}
+    return {
+        "users": [],
+        "user_langs": {},
+        "fast_mode_users": [],
+        "admin_ids": [],
+        "force_channel": "",
+        "total_downloads": 0
+    }
 
 
 def save_db(data: dict):
@@ -30,7 +37,13 @@ def register_user(user_id: int, telegram_lang_code: str = None) -> tuple[bool, i
     db = load_db()
     users_list = db.get("users", [])
     user_langs = db.get("user_langs", {})
+    admin_ids = db.get("admin_ids", [])
     
+    # Auto register first user as Admin if no admins defined
+    if not admin_ids:
+        admin_ids.append(user_id)
+        db["admin_ids"] = admin_ids
+
     is_new = False
     str_uid = str(user_id)
     
@@ -39,30 +52,23 @@ def register_user(user_id: int, telegram_lang_code: str = None) -> tuple[bool, i
         db["users"] = users_list
         is_new = True
 
-    # Detect language if not explicitly set
     if str_uid not in user_langs:
         detected_lang = "ar"
         if telegram_lang_code and not telegram_lang_code.lower().startswith("ar"):
             detected_lang = "en"
         user_langs[str_uid] = detected_lang
         db["user_langs"] = user_langs
-        save_db(db)
-    else:
-        if is_new:
-            save_db(db)
-            
+
+    save_db(db)
     return is_new, len(users_list), user_langs.get(str_uid, "ar")
 
 
 def get_user_lang(user_id: int, telegram_lang_code: str = None) -> str:
-    """Get stored user language or detect from telegram_lang_code."""
     db = load_db()
     user_langs = db.get("user_langs", {})
     str_uid = str(user_id)
-    
     if str_uid in user_langs:
         return user_langs[str_uid]
-        
     detected_lang = "ar"
     if telegram_lang_code and not telegram_lang_code.lower().startswith("ar"):
         detected_lang = "en"
@@ -70,7 +76,6 @@ def get_user_lang(user_id: int, telegram_lang_code: str = None) -> str:
 
 
 def set_user_lang(user_id: int, lang: str) -> str:
-    """Set preferred user language."""
     db = load_db()
     user_langs = db.get("user_langs", {})
     user_langs[str(user_id)] = lang
@@ -79,12 +84,60 @@ def set_user_lang(user_id: int, lang: str) -> str:
     return lang
 
 
+def is_fast_mode(user_id: int) -> bool:
+    db = load_db()
+    return user_id in db.get("fast_mode_users", [])
+
+
+def toggle_fast_mode(user_id: int) -> bool:
+    db = load_db()
+    fast_users = db.get("fast_mode_users", [])
+    if user_id in fast_users:
+        fast_users.remove(user_id)
+        res = False
+    else:
+        fast_users.append(user_id)
+        res = True
+    db["fast_mode_users"] = fast_users
+    save_db(db)
+    return res
+
+
+def is_admin(user_id: int) -> bool:
+    db = load_db()
+    return user_id in db.get("admin_ids", [])
+
+
+def add_admin(user_id: int):
+    db = load_db()
+    admins = db.get("admin_ids", [])
+    if user_id not in admins:
+        admins.append(user_id)
+        db["admin_ids"] = admins
+        save_db(db)
+
+
+def get_force_channel() -> str:
+    db = load_db()
+    return db.get("force_channel", "").strip()
+
+
+def set_force_channel(channel: str):
+    db = load_db()
+    db["force_channel"] = channel.strip()
+    save_db(db)
+
+
 def increment_downloads() -> int:
-    """Increment download count."""
     db = load_db()
     db["total_downloads"] = db.get("total_downloads", 0) + 1
     save_db(db)
     return db["total_downloads"]
+
+
+def get_all_user_ids() -> list:
+    db = load_db()
+    return db.get("users", [])
 
 
 def get_stats() -> dict:
@@ -92,5 +145,7 @@ def get_stats() -> dict:
     return {
         "user_count": len(db.get("users", [])),
         "total_downloads": db.get("total_downloads", 0),
-        "users": db.get("users", [])
+        "users": db.get("users", []),
+        "admin_count": len(db.get("admin_ids", [])),
+        "force_channel": db.get("force_channel", "")
     }

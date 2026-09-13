@@ -142,7 +142,6 @@ async def download_tiktok_watermark_free(url: str) -> dict | None:
                         title = video_info.get("title", "TikTok Post")
                         author = video_info.get("author", {}).get("nickname", "")
                         
-                        # 1. Video Post
                         if video_url:
                             file_id = str(uuid.uuid4())
                             file_path = os.path.join(DOWNLOAD_DIR, f"tiktok_{file_id}.mp4")
@@ -159,7 +158,6 @@ async def download_tiktok_watermark_free(url: str) -> dict | None:
                                         "platform": "TikTok (بدون علامة مائية ✨)"
                                     }
                         
-                        # 2. Photo Post (Slideshow)
                         elif images:
                             image_paths = []
                             file_id = str(uuid.uuid4())[:8]
@@ -189,7 +187,6 @@ async def download_tiktok_watermark_free(url: str) -> dict | None:
                                     "platform": "TikTok (صور 📸)"
                                 }
                         
-                        # 3. Audio only
                         elif music_url:
                             file_id = str(uuid.uuid4())
                             music_path = os.path.join(DOWNLOAD_DIR, f"tiktok_music_{file_id}.mp3")
@@ -352,6 +349,38 @@ async def download_video_quality(url: str, quality: str) -> dict | None:
     except Exception as e:
         logger.error(f"Video download error ({quality}): {e}")
         
+    return None
+
+
+async def convert_video_to_gif(video_path: str) -> str | None:
+    """Convert first 10 seconds of video file to animated GIF."""
+    if not FFMPEG_PATH or not os.path.exists(FFMPEG_PATH):
+        return None
+        
+    file_id = str(uuid.uuid4())[:8]
+    gif_path = os.path.join(DOWNLOAD_DIR, f"clip_{file_id}.gif")
+    
+    cmd = [
+        FFMPEG_PATH,
+        "-y",
+        "-ss", "00:00:00",
+        "-t", "10",
+        "-i", video_path,
+        "-vf", "fps=10,scale=480:-1:flags=lanczos",
+        gif_path
+    ]
+    
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        await proc.communicate()
+        if os.path.exists(gif_path):
+            return gif_path
+    except Exception as e:
+        logger.error(f"Error converting video to GIF: {e}")
     return None
 
 

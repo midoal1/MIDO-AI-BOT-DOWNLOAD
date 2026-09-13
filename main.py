@@ -3,7 +3,7 @@ import logging
 import sys
 
 # Ensure UTF-8 output encoding on Windows console
-if sys.stdout.encoding.lower() != 'utf-8':
+if sys.stdout and hasattr(sys.stdout, 'reconfigure') and sys.stdout.encoding.lower() != 'utf-8':
     try:
         sys.stdout.reconfigure(encoding='utf-8')
     except Exception:
@@ -12,6 +12,7 @@ if sys.stdout.encoding.lower() != 'utf-8':
 from aiogram import Bot, Dispatcher
 from config import BOT_TOKEN, validate_config
 from handlers import router
+from admin import admin_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,9 +26,10 @@ async def main():
         
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
+    dp.include_router(admin_router)
     dp.include_router(router)
     
-    print("🚀 جاري تشغيل بوت تنزيل الفيديوهات...")
+    print("🚀 جاري تشغيل بوت تنزيل الفيديوهات والصوتيات مع لوحة التحكم والإذاعة...")
     print("اضغط Ctrl+C لإيقاف البوت في أي وقت.\n")
     
     # Delete webhook and drop old updates
