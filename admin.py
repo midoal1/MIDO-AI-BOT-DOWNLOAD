@@ -27,24 +27,26 @@ def get_admin_keyboard():
 
 
 @admin_router.message(Command("myid"))
+@admin_router.message(F.text.startswith("/myid"))
 async def my_id_handler(message: Message):
-    await message.answer(f"🆔 **معرفك في تليجرام (Your ID):** <code>{message.from_user.id}</code>", parse_mode="HTML")
+    await message.answer(f"🆔 <b>معرفك في تليجرام (Your ID):</b> <code>{message.from_user.id}</code>", parse_mode="HTML")
 
 
 @admin_router.message(Command("admin"))
+@admin_router.message(F.text.startswith("/admin"))
 async def admin_panel_handler(message: Message):
     user_id = message.from_user.id
     
-    # Check if there are no admins set yet, set the first user as Master Admin
     stats = get_stats()
-    if stats["admin_count"] == 0:
-        add_admin(user_id)
-        await message.answer("🎉 <b>تم تسجيلك وتعيينك مالكاً رسمياً وأدمن للبوت بنجاح!</b>", parse_mode="HTML")
-
-    # Strict Admin Security Check
-    if not is_admin(user_id):
-        await message.answer("⚠️ <b>عذراً، هذا الأمر مخصص لمالك البوت (الأدمن) فقط.</b>", parse_mode="HTML")
-        return
+    if stats["admin_count"] == 0 or not is_admin(user_id):
+        # Auto register first user as Master Admin if no admin set yet
+        if stats["admin_count"] == 0:
+            add_admin(user_id)
+            await message.answer("🎉 <b>تم تسجيلك وتعيينك مالكاً رسمياً وأدمن للبوت بنجاح!</b>", parse_mode="HTML")
+            stats = get_stats()
+        else:
+            await message.answer("⚠️ <b>عذراً، هذا الأمر مخصص لمالك البوت (الأدمن) فقط.</b>", parse_mode="HTML")
+            return
 
     force_chan = stats["force_channel"] or "غير محددة (معطلة)"
 

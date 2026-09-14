@@ -1,18 +1,22 @@
 import asyncio
 import logging
+import os
 import sys
 
+from aiohttp import web
+from aiogram import Bot, Dispatcher
+
+from config import BOT_TOKEN, validate_config
+from handlers import router
+
+
 # Ensure UTF-8 output encoding on Windows console
-if sys.stdout and hasattr(sys.stdout, 'reconfigure') and sys.stdout.encoding.lower() != 'utf-8':
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     try:
-        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
 
-from aiogram import Bot, Dispatcher
-from config import BOT_TOKEN, validate_config
-from handlers import router
-from admin import admin_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,24 +24,72 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
+
+async def health_check(request):
+    """Health-check endpoint required by Render Web Service."""
+    return web.Response(text="MIDO AI BOT is running")
+
+
+async def start_web_server():
+    """Start a minimal HTTP server so Render can detect an open port."""
+    app = web.Application()
+
+    app.router.add_get("/", health_check)
+    app.router.add_get("/health", health_check)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+
+    port = int(os.environ.get("PORT", "10000"))
+
+    site = web.TCPSite(
+        runner,
+        host="0.0.0.0",
+        port=port
+    )
+
+    await site.start()
+
+    logging.info("Web server started on port %s", port)
+
+    return runner
+
+
 async def main():
     if not validate_config():
         sys.exit(1)
-        
+
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
-    dp.include_router(admin_router)
+
     dp.include_router(router)
-    
-    print("🚀 جاري تشغيل بوت تنزيل الفيديوهات والصوتيات مع لوحة التحكم والإذاعة...")
-    print("اضغط Ctrl+C لإيقاف البوت في أي وقت.\n")
-    
-    # Delete webhook and drop old updates
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+
+    web_runner = None
+
+    try:
+        # Start HTTP server required by Render Web Service
+        web_runner = await start_web_server()
+
+        # Delete webhook and drop old Telegram updates
+        await bot.delete_webhook(drop_pending_updates=True)
+
+        logging.info("MIDO AI BOT started")
+        logging.info("Starting Telegram polling...")
+
+        # Start Telegram bot using long polling
+        await dp.start_polling(bot)
+
+    finally:
+        logging.info("Shutting down MIDO AI BOT...")
+
+        await bot.session.close()
+
+        if web_runner is not None:
+            await web_runner.cleanup()
+
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        print("\n🛑 تم إيقاف البوت.")
+        print("MIDO AI BOT stopped")
