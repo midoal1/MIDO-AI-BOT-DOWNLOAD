@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 admin_router = Router()
 
 # Telegram ID الخاص بمالك البوت
-ADMIN_ID = 8858298388
+ADMIN_ID = 8784484645
 
 # حفظ حالة الأدمن مؤقتًا
 ADMIN_STATE = {}
