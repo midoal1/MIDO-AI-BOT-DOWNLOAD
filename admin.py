@@ -14,7 +14,6 @@ from database import (
     get_stats,
     get_all_user_ids,
     set_force_channel,
-    get_force_channel,
 )
 
 logger = logging.getLogger(__name__)
@@ -24,11 +23,11 @@ admin_router = Router()
 # Telegram ID الخاص بمالك البوت
 ADMIN_ID = 8784484645
 
-# حفظ حالة الأدمن مؤقتًا
-ADMIN_STATE = {}
+# حالة الأدمن المؤقتة
+ADMIN_STATE: dict[int, str] = {}
 
 
-def get_admin_keyboard():
+def get_admin_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -59,6 +58,10 @@ def is_owner(user_id: int) -> bool:
     return user_id == ADMIN_ID
 
 
+# =========================================================
+# MY ID
+# =========================================================
+
 @admin_router.message(Command("myid"))
 async def my_id_handler(message: Message):
     if message.from_user is None:
@@ -70,6 +73,10 @@ async def my_id_handler(message: Message):
         parse_mode="HTML",
     )
 
+
+# =========================================================
+# ADMIN PANEL
+# =========================================================
 
 @admin_router.message(Command("admin"))
 async def admin_panel_handler(message: Message):
@@ -84,6 +91,9 @@ async def admin_panel_handler(message: Message):
             parse_mode="HTML",
         )
         return
+
+    # إلغاء أي عملية قديمة عند فتح لوحة الأدمن من جديد
+    ADMIN_STATE.pop(user_id, None)
 
     stats = get_stats()
 
@@ -108,6 +118,10 @@ async def admin_panel_handler(message: Message):
     )
 
 
+# =========================================================
+# ADMIN BUTTONS
+# =========================================================
+
 @admin_router.callback_query(F.data.startswith("admin:"))
 async def handle_admin_callbacks(callback: CallbackQuery):
     if not is_owner(callback.from_user.id):
@@ -122,6 +136,10 @@ async def handle_admin_callbacks(callback: CallbackQuery):
 
     action = callback.data.split(":", 1)[1]
 
+    # -------------------------
+    # CLOSE
+    # -------------------------
+
     if action == "close":
         ADMIN_STATE.pop(callback.from_user.id, None)
 
@@ -130,6 +148,10 @@ async def handle_admin_callbacks(callback: CallbackQuery):
 
         await callback.answer()
         return
+
+    # -------------------------
+    # STATS
+    # -------------------------
 
     if action == "stats":
         stats = get_stats()
@@ -161,6 +183,10 @@ async def handle_admin_callbacks(callback: CallbackQuery):
         await callback.answer("✅ تم تحديث الإحصائيات.")
         return
 
+    # -------------------------
+    # BROADCAST
+    # -------------------------
+
     if action == "broadcast":
         ADMIN_STATE[callback.from_user.id] = "broadcast"
 
@@ -169,14 +195,24 @@ async def handle_admin_callbacks(callback: CallbackQuery):
         if callback.message:
             await callback.message.answer(
                 "📢 <b>قسم الإذاعة العامة:</b>\n\n"
-                "قم الآن بإرسال أو إعادة توجيه أي رسالة، "
-                "صورة، فيديو أو منشور ترغب بنشره لجميع المستخدمين.\n\n"
-                "لإلغاء الإذاعة أرسل:\n"
+                "أرسل الآن الرسالة التي تريد إرسالها لجميع مستخدمي البوت.\n\n"
+                "يمكنك إرسال:\n"
+                "• 📝 نص\n"
+                "• 🖼 صورة\n"
+                "• 🎬 فيديو\n"
+                "• 🎵 صوت\n"
+                "• 📎 ملف\n"
+                "• ↪️ رسالة معاد توجيهها\n\n"
+                "لإلغاء العملية أرسل:\n"
                 "<code>إلغاء</code>",
                 parse_mode="HTML",
             )
 
         return
+
+    # -------------------------
+    # FORCE CHANNEL
+    # -------------------------
 
     if action == "set_channel":
         ADMIN_STATE[callback.from_user.id] = "set_channel"
@@ -186,84 +222,27 @@ async def handle_admin_callbacks(callback: CallbackQuery):
         if callback.message:
             await callback.message.answer(
                 "🔒 <b>إعداد القناة الإجبارية:</b>\n\n"
-                "أرسل الآن معرف القناة، مثال:\n"
+                "أرسل معرف القناة بالشكل التالي:\n"
                 "<code>@MyChannel</code>\n\n"
-                "ولإلغاء الاشتراك الإجباري أرسل:\n"
-                "<code>off</code>",
+                "ولتعطيل الاشتراك الإجباري أرسل:\n"
+                "<code>off</code>\n\n"
+                "ولإلغاء العملية أرسل:\n"
+                "<code>إلغاء</code>",
                 parse_mode="HTML",
             )
 
         return
 
 
-@admin_router.message(
-    F.text,
-    lambda message: (
-        message.from_user is not None
-        and message.from_user.id in ADMIN_STATE
-    ),
-)
-async def handle_admin_state(message: Message):
-    if message.from_user is None:
-        return
-
-    user_id = message.from_user.id
-
-    if not is_owner(user_id):
-        ADMIN_STATE.pop(user_id, None)
-        return
-
-    state = ADMIN_STATE.get(user_id)
-
-    if not state:
-        return
-
-    text = (message.text or "").strip()
-
-    if text.lower() in {"إلغاء", "الغاء", "cancel"}:
-        ADMIN_STATE.pop(user_id, None)
-
-        await message.answer(
-            "❌ تم إلغاء العملية.",
-            reply_markup=get_admin_keyboard(),
-        )
-        return
-
-    if state == "set_channel":
-        if text.lower() == "off":
-            set_force_channel(None)
-            ADMIN_STATE.pop(user_id, None)
-
-            await message.answer(
-                "✅ تم تعطيل الاشتراك الإجباري.",
-                reply_markup=get_admin_keyboard(),
-            )
-            return
-
-        if not text.startswith("@"):
-            await message.answer(
-                "⚠️ أرسل معرف القناة بالشكل الصحيح.\n"
-                "مثال:\n"
-                "<code>@MyChannel</code>",
-                parse_mode="HTML",
-            )
-            return
-
-        set_force_channel(text)
-        ADMIN_STATE.pop(user_id, None)
-
-        await message.answer(
-            f"✅ تم تعيين القناة الإجبارية إلى:\n"
-            f"<code>{text}</code>",
-            parse_mode="HTML",
-            reply_markup=get_admin_keyboard(),
-        )
-        return
-
+# =========================================================
+# BROADCAST HANDLER
+# يجب أن يكون قبل أي Handler عام للرسائل
+# =========================================================
 
 @admin_router.message(
     lambda message: (
         message.from_user is not None
+        and message.from_user.id == ADMIN_ID
         and ADMIN_STATE.get(message.from_user.id) == "broadcast"
     )
 )
@@ -273,19 +252,33 @@ async def handle_broadcast(message: Message):
 
     user_id = message.from_user.id
 
-    if not is_owner(user_id):
-        ADMIN_STATE.pop(user_id, None)
-        return
+    # إلغاء العملية
+    if message.text:
+        text = message.text.strip().lower()
+
+        if text in {"إلغاء", "الغاء", "cancel"}:
+            ADMIN_STATE.pop(user_id, None)
+
+            await message.answer(
+                "❌ تم إلغاء الإذاعة.",
+                reply_markup=get_admin_keyboard(),
+            )
+            return
 
     user_ids = get_all_user_ids()
 
     if not user_ids:
         ADMIN_STATE.pop(user_id, None)
-        await message.answer("⚠️ لا يوجد مستخدمون لإرسال الإذاعة إليهم.")
+
+        await message.answer(
+            "⚠️ لا يوجد مستخدمون مسجلون في البوت لإرسال الإذاعة إليهم.",
+            reply_markup=get_admin_keyboard(),
+        )
         return
 
     success_count = 0
     failed_count = 0
+    skipped_count = 0
 
     status_message = await message.answer(
         f"📢 جاري إرسال الإذاعة إلى {len(user_ids)} مستخدم..."
@@ -293,28 +286,101 @@ async def handle_broadcast(message: Message):
 
     for target_user_id in user_ids:
         try:
-            if target_user_id == user_id:
+            target_user_id = int(target_user_id)
+
+            # لا نرسل للأدمن نفسه
+            if target_user_id == ADMIN_ID:
+                skipped_count += 1
                 continue
 
-            await message.send_copy(chat_id=target_user_id)
+            await message.send_copy(
+                chat_id=target_user_id
+            )
 
             success_count += 1
 
         except Exception as exc:
             failed_count += 1
+
             logger.warning(
                 "Broadcast failed for user %s: %s",
                 target_user_id,
                 exc,
             )
 
+        # منع Flood Control
         await asyncio.sleep(0.05)
 
     ADMIN_STATE.pop(user_id, None)
 
     await status_message.edit_text(
-        "✅ <b>انتهت الإذاعة.</b>\n\n"
+        "✅ <b>انتهت الإذاعة العامة.</b>\n\n"
         f"📨 تم الإرسال بنجاح: <code>{success_count}</code>\n"
-        f"❌ فشل الإرسال: <code>{failed_count}</code>",
+        f"❌ فشل الإرسال: <code>{failed_count}</code>\n"
+        f"⏭ تم التخطي: <code>{skipped_count}</code>",
         parse_mode="HTML",
+    )
+
+
+# =========================================================
+# FORCE CHANNEL HANDLER
+# =========================================================
+
+@admin_router.message(
+    F.text,
+    lambda message: (
+        message.from_user is not None
+        and message.from_user.id == ADMIN_ID
+        and ADMIN_STATE.get(message.from_user.id) == "set_channel"
+    ),
+)
+async def handle_set_channel(message: Message):
+    if message.from_user is None:
+        return
+
+    user_id = message.from_user.id
+
+    text = (message.text or "").strip()
+
+    # إلغاء
+    if text.lower() in {"إلغاء", "الغاء", "cancel"}:
+        ADMIN_STATE.pop(user_id, None)
+
+        await message.answer(
+            "❌ تم إلغاء العملية.",
+            reply_markup=get_admin_keyboard(),
+        )
+        return
+
+    # تعطيل القناة الإجبارية
+    if text.lower() == "off":
+        set_force_channel(None)
+
+        ADMIN_STATE.pop(user_id, None)
+
+        await message.answer(
+            "✅ تم تعطيل الاشتراك الإجباري.",
+            reply_markup=get_admin_keyboard(),
+        )
+        return
+
+    # التحقق من صيغة Username
+    if not text.startswith("@"):
+        await message.answer(
+            "⚠️ أرسل معرف القناة بالشكل الصحيح.\n\n"
+            "مثال:\n"
+            "<code>@MyChannel</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    set_force_channel(text)
+
+    ADMIN_STATE.pop(user_id, None)
+
+    await message.answer(
+        "✅ <b>تم تعيين القناة الإجبارية بنجاح.</b>\n\n"
+        f"📢 القناة:\n<code>{text}</code>",
+        parse_mode="HTML",
+        reply_markup=get_admin_keyboard(),
     )
