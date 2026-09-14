@@ -13,7 +13,9 @@ from handlers import router
 # Ensure UTF-8 output encoding on Windows console
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     try:
-        sys.stdout.reconfigure(encoding="utf-8")
+        reconfigure = getattr(sys.stdout, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8")
     except Exception:
         pass
 
@@ -21,16 +23,16 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
 
 
-async def health_check(request):
+async def health_check(request: web.Request) -> web.Response:
     """Health-check endpoint required by Render Web Service."""
     return web.Response(text="MIDO AI BOT is running")
 
 
-async def start_web_server():
+async def start_web_server() -> web.AppRunner:
     """Start a minimal HTTP server so Render can detect an open port."""
     app = web.Application()
 
@@ -45,7 +47,7 @@ async def start_web_server():
     site = web.TCPSite(
         runner,
         host="0.0.0.0",
-        port=port
+        port=port,
     )
 
     await site.start()
@@ -55,7 +57,7 @@ async def start_web_server():
     return runner
 
 
-async def main():
+async def main() -> None:
     if not validate_config():
         sys.exit(1)
 
