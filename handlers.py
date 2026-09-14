@@ -18,8 +18,11 @@ from database import (
     get_stats, is_fast_mode, toggle_fast_mode, get_force_channel
 )
 
+from admin import admin_router
+
 logger = logging.getLogger(__name__)
 router = Router()
+router.include_router(admin_router)
 
 URL_PATTERN = re.compile(r'https?://[^\s]+')
 
