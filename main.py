@@ -3,7 +3,7 @@ import logging
 import os
 import sys
 
-from aiohttp import web
+from aiohttp import web, ClientSession
 from aiogram import Bot, Dispatcher
 
 from config import BOT_TOKEN, validate_config
@@ -30,6 +30,22 @@ logging.basicConfig(
 async def health_check(request: web.Request) -> web.Response:
     """Health-check endpoint required by Render Web Service."""
     return web.Response(text="MIDO AI BOT is running")
+
+
+async def keep_alive() -> None:
+    """Ping the health endpoint every 14 minutes to prevent Render from sleeping."""
+    port = int(os.environ.get("PORT", "10000"))
+    url = f"http://0.0.0.0:{port}/health"
+    # Give the server a moment to start up
+    await asyncio.sleep(30)
+    while True:
+        try:
+            async with ClientSession() as session:
+                async with session.get(url, timeout=10) as resp:
+                    logging.info("Keep-alive ping sent. Status: %s", resp.status)
+        except Exception as e:
+            logging.warning("Keep-alive ping failed: %s", e)
+        await asyncio.sleep(14 * 60)  # ping every 14 minutes
 
 
 async def start_web_server() -> web.AppRunner:
@@ -71,6 +87,9 @@ async def main() -> None:
     try:
         # Start HTTP server required by Render Web Service
         web_runner = await start_web_server()
+
+        # Start keep-alive background task to prevent Render from sleeping
+        asyncio.create_task(keep_alive())
 
         # Delete webhook and drop old Telegram updates
         await bot.delete_webhook(drop_pending_updates=True)
