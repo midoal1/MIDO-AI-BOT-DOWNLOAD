@@ -3,8 +3,9 @@ import logging
 import os
 import sys
 
-from aiohttp import web, ClientSession
+from aiohttp import web, ClientSession, ClientTimeout
 from aiogram import Bot, Dispatcher
+from aiogram.exceptions import TelegramNetworkError
 
 from config import BOT_TOKEN, validate_config
 from handlers import router
@@ -26,6 +27,8 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 
+logger = logging.getLogger(__name__)
+
 
 async def health_check(request: web.Request) -> web.Response:
     """Health-check endpoint required by Render Web Service."""
@@ -33,25 +36,25 @@ async def health_check(request: web.Request) -> web.Response:
 
 
 async def keep_alive() -> None:
-    """Ping the health endpoint every 14 minutes to prevent Render from sleeping."""
+    """Ping our own health endpoint every 13 minutes to prevent Render sleeping."""
     port = int(os.environ.get("PORT", "10000"))
-    url = f"http://0.0.0.0:{port}/health"
-    # Give the server a moment to start up
-    await asyncio.sleep(30)
+    url = f"http://127.0.0.1:{port}/health"
+    timeout = ClientTimeout(total=15)
+    # Wait for the HTTP server to fully start
+    await asyncio.sleep(20)
     while True:
         try:
-            async with ClientSession() as session:
-                async with session.get(url, timeout=10) as resp:
-                    logging.info("Keep-alive ping sent. Status: %s", resp.status)
+            async with ClientSession(timeout=timeout) as session:
+                async with session.get(url) as resp:
+                    logger.info("Keep-alive ping OK — status: %s", resp.status)
         except Exception as e:
-            logging.warning("Keep-alive ping failed: %s", e)
-        await asyncio.sleep(14 * 60)  # ping every 14 minutes
+            logger.warning("Keep-alive ping failed: %s", e)
+        await asyncio.sleep(13 * 60)  # every 13 minutes
 
 
 async def start_web_server() -> web.AppRunner:
     """Start a minimal HTTP server so Render can detect an open port."""
     app = web.Application()
-
     app.router.add_get("/", health_check)
     app.router.add_get("/health", health_check)
 
@@ -59,18 +62,31 @@ async def start_web_server() -> web.AppRunner:
     await runner.setup()
 
     port = int(os.environ.get("PORT", "10000"))
-
-    site = web.TCPSite(
-        runner,
-        host="0.0.0.0",
-        port=port,
-    )
-
+    site = web.TCPSite(runner, host="0.0.0.0", port=port)
     await site.start()
 
-    logging.info("Web server started on port %s", port)
-
+    logger.info("Web server started on port %s", port)
     return runner
+
+
+async def run_bot_with_retry(bot: Bot, dp: Dispatcher) -> None:
+    """Run Telegram polling with automatic restart on network errors."""
+    retry_delay = 5
+    while True:
+        try:
+            logger.info("Starting Telegram polling...")
+            await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+        except TelegramNetworkError as e:
+            logger.error("Network error: %s — retrying in %ds...", e, retry_delay)
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 60)
+        except Exception as e:
+            logger.error("Unexpected error: %s — retrying in %ds...", e, retry_delay)
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 60)
+        else:
+            # polling ended cleanly
+            break
 
 
 async def main() -> None:
@@ -79,32 +95,31 @@ async def main() -> None:
 
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
-
     dp.include_router(router)
 
     web_runner = None
 
     try:
-        # Start HTTP server required by Render Web Service
+        # 1. Start HTTP server (required by Render to detect the open port)
         web_runner = await start_web_server()
 
-        # Start keep-alive background task to prevent Render from sleeping
+        # 2. Start keep-alive background task
         asyncio.create_task(keep_alive())
 
-        # Delete webhook and drop old Telegram updates
+        # 3. Clear any pending Telegram updates
         await bot.delete_webhook(drop_pending_updates=True)
 
-        logging.info("MIDO AI BOT started")
-        logging.info("Starting Telegram polling...")
+        logger.info("MIDO AI BOT started successfully!")
 
-        # Start Telegram bot using long polling
-        await dp.start_polling(bot)
+        # 4. Run polling with auto-restart on crash
+        await run_bot_with_retry(bot, dp)
 
     finally:
-        logging.info("Shutting down MIDO AI BOT...")
-
-        await bot.session.close()
-
+        logger.info("Shutting down MIDO AI BOT...")
+        try:
+            await bot.session.close()
+        except Exception:
+            pass
         if web_runner is not None:
             await web_runner.cleanup()
 
@@ -113,4 +128,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        print("MIDO AI BOT stopped")
+        print("MIDO AI BOT stopped.")
