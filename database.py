@@ -1,11 +1,46 @@
+"""
+database.py — يدعم MongoDB Atlas كقاعدة بيانات دائمة في السحابة.
+لو MONGO_URI مش موجود، بيرجع لـ database.json كـ fallback.
+"""
 import json
 import os
 import logging
 
 logger = logging.getLogger(__name__)
 
-# على Render، /opt/render/project/src هو المسار الثابت الوحيد اللي ميتمسحش
-# لو مش على Render، نستخدم مسار الملف الحالي
+# ============================================================
+# MongoDB Setup
+# ============================================================
+MONGO_URI = os.getenv("MONGO_URI", "").strip()
+_mongo_col = None  # MongoDB collection
+
+if MONGO_URI:
+    try:
+        from pymongo import MongoClient
+        _client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        _db = _client.get_database("mido_bot")
+        _mongo_col = _db.get_collection("botdata")
+        # تأكد إن في document واحد دايماً
+        if _mongo_col.count_documents({}) == 0:
+            _mongo_col.insert_one({
+                "_id": "main",
+                "users": [],
+                "user_langs": {},
+                "fast_mode_users": [],
+                "admin_ids": [],
+                "force_channel": "",
+                "total_downloads": 0
+            })
+        logger.info("✅ Connected to MongoDB Atlas successfully!")
+    except Exception as e:
+        logger.warning(f"⚠️ MongoDB connection failed, falling back to JSON: {e}")
+        _mongo_col = None
+else:
+    logger.info("ℹ️ MONGO_URI not set — using local database.json")
+
+# ============================================================
+# JSON Fallback Setup
+# ============================================================
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_FILE = os.path.join(_BASE_DIR, "database.json")
 
@@ -19,37 +54,69 @@ _DEFAULT_DB = {
 }
 
 
+# ============================================================
+# Core Load / Save
+# ============================================================
 def load_db() -> dict:
+    if _mongo_col is not None:
+        try:
+            doc = _mongo_col.find_one({"_id": "main"})
+            if doc:
+                doc.pop("_id", None)
+                # تأكد من وجود كل الـ keys
+                for key, default_val in _DEFAULT_DB.items():
+                    if key not in doc:
+                        doc[key] = default_val
+                return doc
+        except Exception as e:
+            logger.error(f"MongoDB load error: {e}")
+
+    # JSON Fallback
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                # تأكد إن كل الـ keys موجودة
                 for key, default_val in _DEFAULT_DB.items():
                     if key not in data:
                         data[key] = default_val
                 return data
         except Exception as e:
-            logger.error(f"Error loading database.json: {e}")
+            logger.error(f"JSON load error: {e}")
     return dict(_DEFAULT_DB)
 
 
 def save_db(data: dict):
+    if _mongo_col is not None:
+        try:
+            payload = {k: v for k, v in data.items() if k != "_id"}
+            _mongo_col.update_one(
+                {"_id": "main"},
+                {"$set": payload},
+                upsert=True
+            )
+            return
+        except Exception as e:
+            logger.error(f"MongoDB save error: {e}")
+
+    # JSON Fallback
     try:
         with open(DB_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.error(f"Error saving database.json: {e}")
+        logger.error(f"JSON save error: {e}")
 
 
+# ============================================================
+# Public API
+# ============================================================
 def register_user(user_id: int, telegram_lang_code: str = None) -> tuple[bool, int, str]:
-    """Register user if new and detect default language. Returns (is_new, total_count, user_lang)."""
+    """Register user if new. Returns (is_new, total_count, user_lang)."""
     db = load_db()
     users_list = db.get("users", [])
     user_langs = db.get("user_langs", {})
     admin_ids = db.get("admin_ids", [])
 
-    # Auto register first user as Admin if no admins defined
+    # أول مستخدم يبقى أدمن تلقائياً لو مفيش أدمن
     if not admin_ids:
         admin_ids.append(user_id)
         db["admin_ids"] = admin_ids
