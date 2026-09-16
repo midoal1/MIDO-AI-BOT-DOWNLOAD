@@ -4,24 +4,34 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-DB_FILE = os.path.join(os.path.dirname(__file__), "database.json")
+# على Render، /opt/render/project/src هو المسار الثابت الوحيد اللي ميتمسحش
+# لو مش على Render، نستخدم مسار الملف الحالي
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_FILE = os.path.join(_BASE_DIR, "database.json")
+
+_DEFAULT_DB = {
+    "users": [],
+    "user_langs": {},
+    "fast_mode_users": [],
+    "admin_ids": [],
+    "force_channel": "",
+    "total_downloads": 0
+}
 
 
 def load_db() -> dict:
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                # تأكد إن كل الـ keys موجودة
+                for key, default_val in _DEFAULT_DB.items():
+                    if key not in data:
+                        data[key] = default_val
+                return data
         except Exception as e:
             logger.error(f"Error loading database.json: {e}")
-    return {
-        "users": [],
-        "user_langs": {},
-        "fast_mode_users": [],
-        "admin_ids": [],
-        "force_channel": "",
-        "total_downloads": 0
-    }
+    return dict(_DEFAULT_DB)
 
 
 def save_db(data: dict):
@@ -38,7 +48,7 @@ def register_user(user_id: int, telegram_lang_code: str = None) -> tuple[bool, i
     users_list = db.get("users", [])
     user_langs = db.get("user_langs", {})
     admin_ids = db.get("admin_ids", [])
-    
+
     # Auto register first user as Admin if no admins defined
     if not admin_ids:
         admin_ids.append(user_id)
@@ -46,7 +56,7 @@ def register_user(user_id: int, telegram_lang_code: str = None) -> tuple[bool, i
 
     is_new = False
     str_uid = str(user_id)
-    
+
     if user_id not in users_list:
         users_list.append(user_id)
         db["users"] = users_list
@@ -122,9 +132,9 @@ def get_force_channel() -> str:
     return db.get("force_channel", "").strip()
 
 
-def set_force_channel(channel: str):
+def set_force_channel(channel):
     db = load_db()
-    db["force_channel"] = channel.strip()
+    db["force_channel"] = (channel or "").strip()
     save_db(db)
 
 
@@ -137,7 +147,7 @@ def increment_downloads() -> int:
 
 def get_all_user_ids() -> list:
     db = load_db()
-    return db.get("users", [])
+    return [int(uid) for uid in db.get("users", [])]
 
 
 def get_stats() -> dict:
