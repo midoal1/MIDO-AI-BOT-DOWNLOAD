@@ -20,6 +20,20 @@ except Exception as e:
 DOWNLOAD_DIR = os.path.join(os.path.dirname(__file__), "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
+# Cookies file path (اختياري — لو موجود بيساعد مع المواقع المقيدة)
+COOKIES_FILE = os.path.join(os.path.dirname(__file__), "cookies.txt")
+
+# Headers مشتركة
+BROWSER_HEADERS = {
+    'User-Agent': (
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+        'AppleWebKit/537.36 (KHTML, like Gecko) '
+        'Chrome/124.0.0.0 Safari/537.36'
+    ),
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+}
+
 
 def clean_url(url: str) -> str:
     """Unquote and clean URL if containing redirect_url or login parameters."""
@@ -34,30 +48,49 @@ def clean_url(url: str) -> str:
     return url
 
 
+def _base_ydl_opts(extra: dict = None) -> dict:
+    """Build shared yt-dlp options with cookies support if available."""
+    opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'noplaylist': True,
+        'user_agent': BROWSER_HEADERS['User-Agent'],
+        'http_headers': BROWSER_HEADERS,
+        # إعادة المحاولة تلقائياً
+        'retries': 3,
+        'fragment_retries': 3,
+        'socket_timeout': 30,
+    }
+    # استخدم cookies لو ملف موجود
+    if os.path.exists(COOKIES_FILE):
+        opts['cookiefile'] = COOKIES_FILE
+        logger.info("Using cookies.txt for yt-dlp")
+
+    if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
+        opts['ffmpeg_location'] = FFMPEG_PATH
+
+    if extra:
+        opts.update(extra)
+    return opts
+
+
 async def extract_info(url: str) -> dict | None:
     """Extract metadata and thumbnail fast without downloading full video."""
     url = clean_url(url)
-    headers = {
-        'User-Agent': (
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-            'AppleWebKit/537.36 (KHTML, like Gecko) '
-            'Chrome/120.0.0.0 Safari/537.36'
-        ),
-    }
-    
+
     # Fast check for TikTok using TikWM
     if "tiktok.com" in url.lower() or "douyin.com" in url.lower():
         try:
             async with aiohttp.ClientSession() as session:
                 final_url = url
                 try:
-                    async with session.get(url, headers=headers, allow_redirects=True, timeout=5) as head_resp:
+                    async with session.get(url, headers=BROWSER_HEADERS, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=5)) as head_resp:
                         final_url = clean_url(str(head_resp.url))
                 except Exception:
                     pass
-                
+
                 payload = {"url": final_url}
-                async with session.post("https://www.tikwm.com/api/", data=payload, headers=headers, timeout=6) as resp:
+                async with session.post("https://www.tikwm.com/api/", data=payload, headers=BROWSER_HEADERS, timeout=aiohttp.ClientTimeout(total=6)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         if data.get("code") == 0 and "data" in data:
@@ -79,14 +112,8 @@ async def extract_info(url: str) -> dict | None:
             logger.warning(f"TikWM info extract failed: {e}")
 
     # Fast yt-dlp info extract
-    ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'skip_download': True,
-        'noplaylist': True,
-        'user_agent': headers['User-Agent'],
-    }
-    
+    ydl_opts = _base_ydl_opts({'skip_download': True})
+
     def _get():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -116,22 +143,15 @@ async def download_tiktok_watermark_free(url: str) -> dict | None:
     url = clean_url(url)
     try:
         async with aiohttp.ClientSession() as session:
-            headers = {
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                )
-            }
             final_url = url
             try:
-                async with session.get(url, headers=headers, allow_redirects=True, timeout=8) as head_resp:
+                async with session.get(url, headers=BROWSER_HEADERS, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=8)) as head_resp:
                     final_url = clean_url(str(head_resp.url))
             except Exception:
                 pass
 
             payload = {"url": final_url, "hd": 1}
-            async with session.post("https://www.tikwm.com/api/", data=payload, headers=headers, timeout=15) as resp:
+            async with session.post("https://www.tikwm.com/api/", data=payload, headers=BROWSER_HEADERS, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     if data.get("code") == 0 and "data" in data:
@@ -141,11 +161,11 @@ async def download_tiktok_watermark_free(url: str) -> dict | None:
                         music_url = video_info.get("music")
                         title = video_info.get("title", "TikTok Post")
                         author = video_info.get("author", {}).get("nickname", "")
-                        
+
                         if video_url:
                             file_id = str(uuid.uuid4())
                             file_path = os.path.join(DOWNLOAD_DIR, f"tiktok_{file_id}.mp4")
-                            async with session.get(video_url, headers=headers, timeout=60) as vid_resp:
+                            async with session.get(video_url, headers=BROWSER_HEADERS, timeout=aiohttp.ClientTimeout(total=60)) as vid_resp:
                                 if vid_resp.status == 200:
                                     with open(file_path, "wb") as f:
                                         while chunk := await vid_resp.content.read(1024 * 1024):
@@ -157,22 +177,22 @@ async def download_tiktok_watermark_free(url: str) -> dict | None:
                                         "author": author,
                                         "platform": "TikTok (بدون علامة مائية ✨)"
                                     }
-                        
+
                         elif images:
                             image_paths = []
                             file_id = str(uuid.uuid4())[:8]
                             for idx, img_url in enumerate(images[:10]):
                                 img_path = os.path.join(DOWNLOAD_DIR, f"tiktok_photo_{file_id}_{idx}.jpg")
-                                async with session.get(img_url, headers=headers, timeout=30) as img_resp:
+                                async with session.get(img_url, headers=BROWSER_HEADERS, timeout=aiohttp.ClientTimeout(total=30)) as img_resp:
                                     if img_resp.status == 200:
                                         with open(img_path, "wb") as f:
                                             f.write(await img_resp.read())
                                         image_paths.append(img_path)
-                            
+
                             music_path = None
                             if music_url:
                                 music_path = os.path.join(DOWNLOAD_DIR, f"tiktok_music_{file_id}.mp3")
-                                async with session.get(music_url, headers=headers, timeout=30) as mus_resp:
+                                async with session.get(music_url, headers=BROWSER_HEADERS, timeout=aiohttp.ClientTimeout(total=30)) as mus_resp:
                                     if mus_resp.status == 200:
                                         with open(music_path, "wb") as f:
                                             f.write(await mus_resp.read())
@@ -186,11 +206,11 @@ async def download_tiktok_watermark_free(url: str) -> dict | None:
                                     "author": author,
                                     "platform": "TikTok (صور 📸)"
                                 }
-                        
+
                         elif music_url:
                             file_id = str(uuid.uuid4())
                             music_path = os.path.join(DOWNLOAD_DIR, f"tiktok_music_{file_id}.mp3")
-                            async with session.get(music_url, headers=headers, timeout=30) as mus_resp:
+                            async with session.get(music_url, headers=BROWSER_HEADERS, timeout=aiohttp.ClientTimeout(total=30)) as mus_resp:
                                 if mus_resp.status == 200:
                                     with open(music_path, "wb") as f:
                                         f.write(await mus_resp.read())
@@ -209,7 +229,7 @@ async def download_tiktok_watermark_free(url: str) -> dict | None:
 async def download_audio(url: str) -> dict | None:
     """Download audio only as MP3."""
     url = clean_url(url)
-    
+
     if "tiktok.com" in url.lower() or "douyin.com" in url.lower():
         res = await download_tiktok_watermark_free(url)
         if res and res.get("type") in ["audio", "photos"] and res.get("music_path"):
@@ -223,46 +243,35 @@ async def download_audio(url: str) -> dict | None:
 
     file_id = str(uuid.uuid4())
     output_template = os.path.join(DOWNLOAD_DIR, f"audio_{file_id}.%(ext)s")
-    
-    ydl_opts = {
+
+    extra = {
         'format': 'bestaudio[ext=m4a]/bestaudio/best',
         'outtmpl': output_template,
-        'quiet': True,
-        'no_warnings': True,
-        'noplaylist': True,
         'concurrent_fragment_downloads': 5,
-        'user_agent': (
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-            'AppleWebKit/537.36 (KHTML, like Gecko) '
-            'Chrome/120.0.0.0 Safari/537.36'
-        ),
     }
 
     if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
-        ydl_opts['ffmpeg_location'] = FFMPEG_PATH
-        ydl_opts['postprocessors'] = [{
+        extra['postprocessors'] = [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
             'preferredquality': '192',
         }]
 
+    ydl_opts = _base_ydl_opts(extra)
+
     def _extract():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
-            
             base_name, _ = os.path.splitext(filename)
             actual_file = base_name + ".mp3"
             if not os.path.exists(actual_file):
                 actual_file = filename
-            
-            title = info.get("title", "صوت")
-            uploader = info.get("uploader", "") or info.get("uploader_id", "")
             return {
                 "type": "audio",
                 "file_path": actual_file,
-                "title": title,
-                "author": uploader,
+                "title": info.get("title", "صوت"),
+                "author": info.get("uploader", "") or info.get("uploader_id", ""),
                 "platform": "صوت MP3 🎵"
             }
 
@@ -277,7 +286,7 @@ async def download_audio(url: str) -> dict | None:
 async def download_video_quality(url: str, quality: str) -> dict | None:
     """Download video with target quality (720p, 480p, or best)."""
     url = clean_url(url)
-    
+
     if "tiktok.com" in url.lower() or "douyin.com" in url.lower():
         res = await download_tiktok_watermark_free(url)
         if res:
@@ -285,7 +294,7 @@ async def download_video_quality(url: str, quality: str) -> dict | None:
 
     file_id = str(uuid.uuid4())
     output_template = os.path.join(DOWNLOAD_DIR, f"video_{file_id}.%(ext)s")
-    
+
     if quality == "720":
         fmt_spec = 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]/best'
     elif quality == "480":
@@ -293,28 +302,17 @@ async def download_video_quality(url: str, quality: str) -> dict | None:
     else:
         fmt_spec = 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=720]/best'
 
-    ydl_opts = {
+    extra = {
         'format': fmt_spec,
         'outtmpl': output_template,
-        'quiet': True,
-        'no_warnings': True,
-        'noplaylist': True,
         'concurrent_fragment_downloads': 5,
-        'user_agent': (
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-            'AppleWebKit/537.36 (KHTML, like Gecko) '
-            'Chrome/120.0.0.0 Safari/537.36'
-        ),
     }
-
-    if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
-        ydl_opts['ffmpeg_location'] = FFMPEG_PATH
+    ydl_opts = _base_ydl_opts(extra)
 
     def _extract():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
-            
             base_name, _ = os.path.splitext(filename)
             actual_file = filename
             if not os.path.exists(filename):
@@ -322,16 +320,12 @@ async def download_video_quality(url: str, quality: str) -> dict | None:
                     if os.path.exists(base_name + ext):
                         actual_file = base_name + ext
                         break
-            
-            title = info.get("title", "فيديو")
-            uploader = info.get("uploader", "") or info.get("uploader_id", "")
-            extractor = info.get("extractor_key", "Video")
             return {
                 "type": "video",
                 "file_path": actual_file,
-                "title": title,
-                "author": uploader,
-                "platform": extractor
+                "title": info.get("title", "فيديو"),
+                "author": info.get("uploader", "") or info.get("uploader_id", ""),
+                "platform": info.get("extractor_key", "Video")
             }
 
     try:
@@ -348,7 +342,7 @@ async def download_video_quality(url: str, quality: str) -> dict | None:
                     return await download_video_quality(url, "480")
     except Exception as e:
         logger.error(f"Video download error ({quality}): {e}")
-        
+
     return None
 
 
@@ -356,10 +350,10 @@ async def convert_video_to_gif(video_path: str) -> str | None:
     """Convert first 10 seconds of video file to animated GIF."""
     if not FFMPEG_PATH or not os.path.exists(FFMPEG_PATH):
         return None
-        
+
     file_id = str(uuid.uuid4())[:8]
     gif_path = os.path.join(DOWNLOAD_DIR, f"clip_{file_id}.gif")
-    
+
     cmd = [
         FFMPEG_PATH,
         "-y",
@@ -369,7 +363,7 @@ async def convert_video_to_gif(video_path: str) -> str | None:
         "-vf", "fps=10,scale=480:-1:flags=lanczos",
         gif_path
     ]
-    
+
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
