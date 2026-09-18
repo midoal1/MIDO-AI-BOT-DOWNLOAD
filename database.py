@@ -1,129 +1,55 @@
-"""
-database.py — يدعم MongoDB Atlas كقاعدة بيانات دائمة في السحابة.
-لو MONGO_URI مش موجود، بيرجع لـ database.json كـ fallback.
-"""
 import json
 import os
+import time
 import logging
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
-# ============================================================
-# MongoDB Setup
-# ============================================================
-MONGO_URI = os.getenv("MONGO_URI", "").strip()
-_mongo_col = None  # MongoDB collection
-
-if MONGO_URI:
-    try:
-        from pymongo import MongoClient
-        _client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-        _db = _client.get_database("mido_bot")
-        _mongo_col = _db.get_collection("botdata")
-        # تأكد إن في document واحد دايماً
-        if _mongo_col.count_documents({}) == 0:
-            _mongo_col.insert_one({
-                "_id": "main",
-                "users": [],
-                "user_langs": {},
-                "fast_mode_users": [],
-                "admin_ids": [],
-                "force_channel": "",
-                "total_downloads": 0
-            })
-        logger.info("✅ Connected to MongoDB Atlas successfully!")
-    except Exception as e:
-        logger.warning(f"⚠️ MongoDB connection failed, falling back to JSON: {e}")
-        _mongo_col = None
-else:
-    logger.info("ℹ️ MONGO_URI not set — using local database.json")
-
-# ============================================================
-# JSON Fallback Setup
-# ============================================================
-_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_FILE = os.path.join(_BASE_DIR, "database.json")
-
-_DEFAULT_DB = {
-    "users": [],
-    "user_langs": {},
-    "fast_mode_users": [],
-    "admin_ids": [],
-    "force_channel": "",
-    "total_downloads": 0
-}
+DB_FILE = os.path.join(os.path.dirname(__file__), "database.json")
 
 
-# ============================================================
-# Core Load / Save
-# ============================================================
 def load_db() -> dict:
-    if _mongo_col is not None:
-        try:
-            doc = _mongo_col.find_one({"_id": "main"})
-            if doc:
-                doc.pop("_id", None)
-                # تأكد من وجود كل الـ keys
-                for key, default_val in _DEFAULT_DB.items():
-                    if key not in doc:
-                        doc[key] = default_val
-                return doc
-        except Exception as e:
-            logger.error(f"MongoDB load error: {e}")
-
-    # JSON Fallback
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                for key, default_val in _DEFAULT_DB.items():
-                    if key not in data:
-                        data[key] = default_val
-                return data
+                return json.load(f)
         except Exception as e:
-            logger.error(f"JSON load error: {e}")
-    return dict(_DEFAULT_DB)
+            logger.error(f"Error loading database.json: {e}")
+    return {
+        "users": [],
+        "user_langs": {},
+        "fast_mode_users": [],
+        "admin_ids": [],
+        "force_channel": "",
+        "total_downloads": 0,
+        "vip_until": {},
+        "daily_downloads": {},
+        "log_channel": "@midoaidownload"
+    }
 
 
 def save_db(data: dict):
-    if _mongo_col is not None:
-        try:
-            payload = {k: v for k, v in data.items() if k != "_id"}
-            _mongo_col.update_one(
-                {"_id": "main"},
-                {"$set": payload},
-                upsert=True
-            )
-            return
-        except Exception as e:
-            logger.error(f"MongoDB save error: {e}")
-
-    # JSON Fallback
     try:
         with open(DB_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.error(f"JSON save error: {e}")
+        logger.error(f"Error saving database.json: {e}")
 
 
-# ============================================================
-# Public API
-# ============================================================
 def register_user(user_id: int, telegram_lang_code: str = None) -> tuple[bool, int, str]:
-    """Register user if new. Returns (is_new, total_count, user_lang)."""
     db = load_db()
     users_list = db.get("users", [])
     user_langs = db.get("user_langs", {})
     admin_ids = db.get("admin_ids", [])
-
-    # أول مستخدم يبقى أدمن تلقائياً لو مفيش أدمن
+    
     if not admin_ids:
         admin_ids.append(user_id)
         db["admin_ids"] = admin_ids
 
     is_new = False
     str_uid = str(user_id)
-
+    
     if user_id not in users_list:
         users_list.append(user_id)
         db["users"] = users_list
@@ -159,6 +85,89 @@ def set_user_lang(user_id: int, lang: str) -> str:
     db["user_langs"] = user_langs
     save_db(db)
     return lang
+
+
+def is_vip(user_id: int) -> tuple[bool, str]:
+    """Check if user has an active VIP subscription. Returns (is_vip, expire_date_str)."""
+    db = load_db()
+    vip_until = db.get("vip_until", {})
+    str_uid = str(user_id)
+    
+    if str_uid in vip_until:
+        expire_timestamp = vip_until[str_uid]
+        if time.time() < expire_timestamp:
+            date_str = datetime.fromtimestamp(expire_timestamp).strftime("%Y-%m-%d")
+            return True, date_str
+    return False, ""
+
+
+def activate_vip(user_id: int, days: int = 30) -> str:
+    """Activate or extend VIP subscription for N days."""
+    db = load_db()
+    vip_until = db.get("vip_until", {})
+    str_uid = str(user_id)
+    
+    current_time = time.time()
+    existing_expiry = vip_until.get(str_uid, 0)
+    
+    if existing_expiry > current_time:
+        new_expiry = existing_expiry + (days * 86400)
+    else:
+        new_expiry = current_time + (days * 86400)
+        
+    vip_until[str_uid] = new_expiry
+    db["vip_until"] = vip_until
+    save_db(db)
+    
+    return datetime.fromtimestamp(new_expiry).strftime("%Y-%m-%d")
+
+
+def check_daily_limit(user_id: int, max_free: int = 5) -> tuple[bool, int]:
+    """
+    Check daily download limit for free users.
+    Returns (can_download, remaining_downloads).
+    """
+    is_vip_active, _ = is_vip(user_id)
+    if is_vip_active:
+        return True, 999  # Unlimited for VIP
+
+    db = load_db()
+    daily = db.get("daily_downloads", {})
+    str_uid = str(user_id)
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    
+    user_record = daily.get(str_uid, {})
+    if user_record.get("date") != today_str:
+        user_record = {"date": today_str, "count": 0}
+        
+    current_count = user_record.get("count", 0)
+    if current_count >= max_free:
+        return False, 0
+        
+    return True, (max_free - current_count)
+
+
+def record_download(user_id: int):
+    """Record a download for daily tracking and global stats."""
+    db = load_db()
+    db["total_downloads"] = db.get("total_downloads", 0) + 1
+    
+    is_vip_active, _ = is_vip(user_id)
+    if not is_vip_active:
+        daily = db.get("daily_downloads", {})
+        str_uid = str(user_id)
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        
+        user_record = daily.get(str_uid, {})
+        if user_record.get("date") != today_str:
+            user_record = {"date": today_str, "count": 1}
+        else:
+            user_record["count"] = user_record.get("count", 0) + 1
+            
+        daily[str_uid] = user_record
+        db["daily_downloads"] = daily
+        
+    save_db(db)
 
 
 def is_fast_mode(user_id: int) -> bool:
@@ -199,30 +208,36 @@ def get_force_channel() -> str:
     return db.get("force_channel", "").strip()
 
 
-def set_force_channel(channel):
+def set_force_channel(channel: str):
     db = load_db()
-    db["force_channel"] = (channel or "").strip()
+    db["force_channel"] = channel.strip()
     save_db(db)
 
 
-def increment_downloads() -> int:
+def get_log_channel() -> str:
     db = load_db()
-    db["total_downloads"] = db.get("total_downloads", 0) + 1
-    save_db(db)
-    return db["total_downloads"]
+    return db.get("log_channel", "@midoaidownload").strip()
 
 
 def get_all_user_ids() -> list:
     db = load_db()
-    return [int(uid) for uid in db.get("users", [])]
+    return db.get("users", [])
 
 
 def get_stats() -> dict:
     db = load_db()
+    vip_count = 0
+    current_time = time.time()
+    for uid, exp in db.get("vip_until", {}).items():
+        if exp > current_time:
+            vip_count += 1
+            
     return {
         "user_count": len(db.get("users", [])),
+        "vip_count": vip_count,
         "total_downloads": db.get("total_downloads", 0),
         "users": db.get("users", []),
         "admin_count": len(db.get("admin_ids", [])),
-        "force_channel": db.get("force_channel", "")
+        "force_channel": db.get("force_channel", ""),
+        "log_channel": db.get("log_channel", "@midoaidownload")
     }

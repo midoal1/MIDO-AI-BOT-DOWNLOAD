@@ -14,15 +14,14 @@ from downloader import (
     convert_video_to_gif, cleanup_file
 )
 from database import (
-    register_user, get_user_lang, set_user_lang, increment_downloads,
-    get_stats, is_fast_mode, toggle_fast_mode, get_force_channel
+    register_user, get_user_lang, set_user_lang,
+    get_stats, is_fast_mode, toggle_fast_mode, get_force_channel,
+    is_vip, check_daily_limit, record_download
 )
-
-from admin import admin_router
+from subscriptions import get_vip_upgrade_keyboard
 
 logger = logging.getLogger(__name__)
 router = Router()
-router.include_router(admin_router)
 
 URL_PATTERN = re.compile(r'https?://[^\s]+')
 
@@ -35,6 +34,7 @@ TEXTS = {
             "👋 <b>أهلاً بك في بوت تنزيل الفيديوهات والصوتيات الشامل!</b>\n\n"
             "👥 <b>إجمالي مستخدمي البوت:</b> <code>{user_count}</code> مستخدم\n"
             "🌐 <b>اللغة الحالية:</b> 🇸🇦 العربية\n"
+            "⭐ <b>الحالة:</b> {vip_status}\n"
             "⚡ <b>الوضع السريع:</b> {fast_status}\n\n"
             "🎬 <b>المنصات المدعومة:</b>\n"
             "• 🎵 <b>TikTok</b> (فيديوهات بدون علامة مائية + صور 📸)\n"
@@ -50,7 +50,7 @@ TEXTS = {
             "1. انسخ رابط أي فيديو من أي منصة.\n"
             "2. أرسل الرابط في المحادثة.\n"
             "3. اختر الجودة المطلوبة (720p / 480p) أو صوت فقط (MP3).\n\n"
-            "⚠️ <b>ملاحظة:</b> الحد الأقصى لحجم الملفات في تليجرام هو 50 ميجابايت."
+            "⚠️ <b>ملاحظة:</b> يحصل الحساب المجاني على 5 تنزيلات يومياً، أو اشترك بـ VIP لتنزيل غير محدود."
         ),
         "inspecting": "🔍 <b>جاري فحص الرابط وجلب الخيارات...</b>",
         "select_option": "\n👇 <b>اختر نوع التحميل أو الجودة المطلوبة:</b>",
@@ -80,6 +80,7 @@ TEXTS = {
             "👋 <b>Welcome to Video & Audio Downloader Bot!</b>\n\n"
             "👥 <b>Total Bot Users:</b> <code>{user_count}</code>\n"
             "🌐 <b>Current Language:</b> 🇬🇧 English\n"
+            "⭐ <b>Status:</b> {vip_status}\n"
             "⚡ <b>Fast Mode:</b> {fast_status}\n\n"
             "🎬 <b>Supported Platforms:</b>\n"
             "• 🎵 <b>TikTok</b> (No Watermark + Photo Posts 📸)\n"
@@ -95,7 +96,7 @@ TEXTS = {
             "1. Copy any video link from any platform.\n"
             "2. Send the link here in chat.\n"
             "3. Select target quality (720p / 480p) or Audio only (MP3).\n\n"
-            "⚠️ <b>Note:</b> Telegram max file upload limit is 50 MB."
+            "⚠️ <b>Note:</b> Free users get 5 daily downloads. Upgrade to VIP for unlimited access."
         ),
         "inspecting": "🔍 <b>Inspecting link and fetching options...</b>",
         "select_option": "\n👇 <b>Select download quality or format:</b>",
@@ -124,7 +125,6 @@ TEXTS = {
 
 
 async def check_force_sub(bot, user_id: int, lang: str) -> tuple[bool, InlineKeyboardMarkup | None, str | None]:
-    """Check if force channel subscription is enabled and user is subscribed."""
     channel = get_force_channel()
     if not channel:
         return True, None, None
@@ -181,6 +181,12 @@ def get_main_keyboard(current_lang: str, is_fast: bool):
             ],
             [
                 InlineKeyboardButton(text=fast_text, callback_data="toggle_fast"),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⭐ " + ("ترقية إلى باقة VIP" if current_lang == "ar" else "Upgrade to VIP"),
+                    callback_data="vip_upgrade"
+                )
             ]
         ]
     )
@@ -194,7 +200,6 @@ async def start_handler(message: Message):
     if is_new:
         await update_bot_description(message.bot, user_count)
 
-    # Force Sub Check
     is_subbed, sub_kb, sub_msg = await check_force_sub(message.bot, message.from_user.id, ulang)
     if not is_subbed:
         await message.answer(sub_msg, reply_markup=sub_kb, parse_mode="HTML")
@@ -205,10 +210,35 @@ async def start_handler(message: Message):
     if ulang == "en":
         fast_status = "ON 🟢" if is_fast else "OFF 🔴"
 
+    vip_active, exp_date = is_vip(message.from_user.id)
+    vip_status = f"مشترك VIP ⭐ (حتى {exp_date})" if vip_active else "حساب مجاني 🆓 (5 تنزيلات/يوم)"
+    if ulang == "en":
+        vip_status = f"VIP Active ⭐ (until {exp_date})" if vip_active else "Free Tier 🆓 (5 daily downloads)"
+
     t = TEXTS[ulang]
-    welcome_text = t["welcome"].format(user_count=user_count, fast_status=fast_status)
+    welcome_text = t["welcome"].format(user_count=user_count, fast_status=fast_status, vip_status=vip_status)
     keyboard = get_main_keyboard(ulang, is_fast)
     await message.answer(welcome_text, reply_markup=keyboard, parse_mode="HTML")
+
+
+@router.callback_query(F.data == "vip_upgrade")
+async def handle_vip_upgrade_button(callback: CallbackQuery):
+    lang = get_user_lang(callback.from_user.id, callback.from_user.language_code)
+    msg = (
+        "⭐ <b>باقة الاشتراكات الفائقة VIP:</b>\n\n"
+        "• تنزيلات غير محدودة بدون حدود يومية.\n"
+        "• أسرع جودة وأعلى دقة (1080p HD).\n"
+        "• تنزيل ألبومات تيك توك وتفعيل النمط السريع.\n\n"
+        "اختر طريقة الشراء المفضل لك أدناه:"
+    ) if lang == "ar" else (
+        "⭐ <b>VIP Premium Subscription:</b>\n\n"
+        "• Unlimited daily downloads.\n"
+        "• Max video quality (1080p HD).\n"
+        "• Instant Fast Mode & TikTok Photo Albums.\n\n"
+        "Choose your preferred payment method below:"
+    )
+    await callback.answer()
+    await callback.message.answer(msg, reply_markup=get_vip_upgrade_keyboard(lang), parse_mode="HTML")
 
 
 @router.callback_query(F.data == "check_sub")
@@ -240,7 +270,12 @@ async def handle_toggle_fast(callback: CallbackQuery):
     if ulang == "en":
         fast_status = "ON 🟢" if is_fast else "OFF 🔴"
 
-    welcome_text = t["welcome"].format(user_count=stats["user_count"], fast_status=fast_status)
+    vip_active, exp_date = is_vip(callback.from_user.id)
+    vip_status = f"مشترك VIP ⭐ (حتى {exp_date})" if vip_active else "حساب مجاني 🆓 (5 تنزيلات/يوم)"
+    if ulang == "en":
+        vip_status = f"VIP Active ⭐ (until {exp_date})" if vip_active else "Free Tier 🆓 (5 daily downloads)"
+
+    welcome_text = t["welcome"].format(user_count=stats["user_count"], fast_status=fast_status, vip_status=vip_status)
     keyboard = get_main_keyboard(ulang, is_fast)
     await safe_edit_status(callback.message, welcome_text, reply_markup=keyboard)
 
@@ -258,7 +293,12 @@ async def handle_set_language(callback: CallbackQuery):
     if new_lang == "en":
         fast_status = "ON 🟢" if is_fast else "OFF 🔴"
 
-    welcome_text = t["welcome"].format(user_count=stats["user_count"], fast_status=fast_status)
+    vip_active, exp_date = is_vip(callback.from_user.id)
+    vip_status = f"مشترك VIP ⭐ (حتى {exp_date})" if vip_active else "حساب مجاني 🆓 (5 تنزيلات/يوم)"
+    if new_lang == "en":
+        vip_status = f"VIP Active ⭐ (until {exp_date})" if vip_active else "Free Tier 🆓 (5 daily downloads)"
+
+    welcome_text = t["welcome"].format(user_count=stats["user_count"], fast_status=fast_status, vip_status=vip_status)
     keyboard = get_main_keyboard(new_lang, is_fast)
     await safe_edit_status(callback.message, welcome_text, reply_markup=keyboard)
 
@@ -267,13 +307,15 @@ async def handle_set_language(callback: CallbackQuery):
 async def stats_handler(message: Message):
     stats = get_stats()
     user_count = stats["user_count"]
+    vip_count = stats.get("vip_count", 0)
     downloads = stats["total_downloads"]
 
     await update_bot_description(message.bot, user_count)
 
     stats_text = (
         "📊 <b>إحصائيات البوت الحالية:</b>\n\n"
-        f"👥 <b>عدد المستخدمين المسجلين:</b> <code>{user_count}</code>\n"
+        f"👥 <b>إجمالي المستخدمين:</b> <code>{user_count}</code>\n"
+        f"⭐ <b>المشتركين الـ VIP:</b> <code>{vip_count}</code>\n"
         f"📥 <b>إجمالي الفيديوهات والصوتيات المنزلة:</b> <code>{downloads}</code>\n\n"
         "✨ تم تحديث الوصف التعريفي للبوت في تليجرام بنجاح!"
     )
@@ -296,10 +338,22 @@ async def handle_video_link(message: Message):
 
     t = TEXTS[ulang]
 
-    # Force Sub Check
     is_subbed, sub_kb, sub_msg = await check_force_sub(message.bot, message.from_user.id, ulang)
     if not is_subbed:
         await message.answer(sub_msg, reply_markup=sub_kb, parse_mode="HTML")
+        return
+
+    # Daily download limit check for free users
+    can_dl, rem = check_daily_limit(message.from_user.id, max_free=5)
+    if not can_dl:
+        limit_text = (
+            "⚠️ <b>عذراً، لقد استهلكت رصيدك المجاني اليومي (5 تنزيلات).</b>\n\n"
+            "للحصول على تنزيلات غير محدودة وبأعلى جودة بدون قيود يومية، يرجى الترقية إلى <b>باقة الـ VIP</b>."
+        ) if ulang == "ar" else (
+            "⚠️ <b>Sorry, you have reached your daily free limit (5 downloads).</b>\n\n"
+            "To enjoy unlimited daily downloads with max quality, upgrade to <b>VIP Subscription</b>."
+        )
+        await message.answer(limit_text, reply_markup=get_vip_upgrade_keyboard(ulang), parse_mode="HTML")
         return
 
     urls = URL_PATTERN.findall(message.text)
@@ -310,15 +364,13 @@ async def handle_video_link(message: Message):
     url = urls[0]
     status_msg = await message.answer(t["inspecting"], parse_mode="HTML")
 
-    # Fast Mode: Auto Download HD video directly!
     if is_fast_mode(message.from_user.id):
         await status_msg.edit_text(t["downloading_video"].format(quality="720"), parse_mode="HTML")
         download_data = await download_video_quality(url, "720")
         if download_data and download_data.get("file_path"):
-            increment_downloads()
+            record_download(message.from_user.id)
             file_path = download_data["file_path"]
             title = html.escape(download_data.get("title", ""))
-            author = html.escape(download_data.get("author", ""))
             caption = f"🎬 <b>{title[:80]}</b>\n🤖 @MIDOALIAIBOT"
             await message.answer_video(video=FSInputFile(file_path), caption=caption, parse_mode="HTML")
             cleanup_file(file_path)
@@ -383,7 +435,7 @@ async def handle_download_option(callback: CallbackQuery):
         await callback.answer("⚠️ Request invalid.", show_alert=True)
         return
 
-    mode = parts[1]  # "720", "480", "mp3", or "gif"
+    mode = parts[1]
     url_id = parts[2]
 
     ulang = get_user_lang(callback.from_user.id, callback.from_user.language_code)
@@ -410,7 +462,6 @@ async def handle_download_option(callback: CallbackQuery):
         if mode == "mp3":
             download_data = await download_audio(url)
         elif mode == "gif":
-            # Download video first then convert to GIF
             download_data = await download_video_quality(url, "480")
             if download_data and download_data.get("file_path"):
                 gif_path = await convert_video_to_gif(download_data["file_path"])
@@ -427,7 +478,7 @@ async def handle_download_option(callback: CallbackQuery):
             await safe_edit_status(callback.message, t["error_download"])
             return
 
-        increment_downloads()
+        record_download(callback.from_user.id)
 
         title = html.escape(download_data.get("title", ""))
         author = html.escape(download_data.get("author", ""))
