@@ -58,6 +58,11 @@ def _base_ydl_opts(extra: dict = None) -> dict:
         'default_search': 'auto',
         # SSL
         'nocheckcertificate': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'web']
+            }
+        }
     }
 
     # Cookies لو موجودة
@@ -72,6 +77,7 @@ def _base_ydl_opts(extra: dict = None) -> dict:
     if extra:
         opts.update(extra)
     return opts
+
 
 
 # ─── URL Cleaner ──────────────────────────────────────────
@@ -391,8 +397,8 @@ async def download_audio(url: str) -> dict | None:
 
     ydl_opts = _base_ydl_opts(extra)
 
-    def _extract():
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    def _extract(opts):
+        with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
             base, _ = os.path.splitext(filename)
@@ -405,11 +411,26 @@ async def download_audio(url: str) -> dict | None:
                 "platform": "صوت MP3 🎵",
             }
 
+    loop = asyncio.get_running_loop()
     try:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, _extract)
+        return await loop.run_in_executor(None, lambda: _extract(ydl_opts))
     except Exception as e:
-        logger.error(f"Audio download error: {e}")
+        logger.warning(f"Primary audio download error on {url}: {e}")
+        try:
+            fallback_opts = _base_ydl_opts({
+                'format': 'best',
+                'outtmpl': output_template,
+                'concurrent_fragment_downloads': 4,
+            })
+            if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
+                fallback_opts['postprocessors'] = [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }]
+            return await loop.run_in_executor(None, lambda: _extract(fallback_opts))
+        except Exception as fe:
+            logger.error(f"Fallback audio download error on {url}: {fe}")
     return None
 
 
@@ -458,14 +479,14 @@ async def download_video_quality(url: str, quality: str) -> dict | None:
     }
     ydl_opts = _base_ydl_opts(extra)
 
-    def _extract():
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    def _extract(opts):
+        with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
             base, _ = os.path.splitext(filename)
             actual = filename
             if not os.path.exists(filename):
-                for ext in ['.mp4', '.mkv', '.webm', '.mov']:
+                for ext in ['.mp4', '.mkv', '.webm', '.mov', '.flv', '.avi']:
                     if os.path.exists(base + ext):
                         actual = base + ext
                         break
@@ -478,18 +499,35 @@ async def download_video_quality(url: str, quality: str) -> dict | None:
                 "platform": info.get("extractor_key", "Video"),
             }
 
-    try:
-        loop = asyncio.get_running_loop()
-        res = await loop.run_in_executor(None, _extract)
+    loop = asyncio.get_running_loop()
 
+    # Attempt 1: Requested quality format spec
+    try:
+        res = await loop.run_in_executor(None, lambda: _extract(ydl_opts))
         if res and res.get("file_path") and os.path.exists(res["file_path"]):
             size_mb = os.path.getsize(res["file_path"]) / (1024 * 1024)
             res["file_size_mb"] = size_mb
             res["requested_quality"] = quality
             return res
-
     except Exception as e:
-        logger.error(f"Video download error ({quality}p): {e}")
+        logger.warning(f"Primary video format download failed for {quality}p on {url}: {e}")
+
+    # Attempt 2: General fallback format spec ('best/bestvideo+bestaudio')
+    try:
+        fallback_opts = _base_ydl_opts({
+            'format': 'best/bestvideo+bestaudio',
+            'outtmpl': output_template,
+            'concurrent_fragment_downloads': 4,
+            'merge_output_format': 'mp4',
+        })
+        res = await loop.run_in_executor(None, lambda: _extract(fallback_opts))
+        if res and res.get("file_path") and os.path.exists(res["file_path"]):
+            size_mb = os.path.getsize(res["file_path"]) / (1024 * 1024)
+            res["file_size_mb"] = size_mb
+            res["requested_quality"] = quality
+            return res
+    except Exception as e:
+        logger.error(f"Fallback video download error on {url}: {e}")
 
     return None
 
