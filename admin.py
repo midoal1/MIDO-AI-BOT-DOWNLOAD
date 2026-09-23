@@ -15,6 +15,7 @@ from database import (
     get_all_user_ids,
     set_force_channel,
     is_admin,
+    get_vip_users_list,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,9 +51,15 @@ def get_admin_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
+                    text="⭐ قائمة المشتركين VIP",
+                    callback_data="admin:vip_list",
+                ),
+                InlineKeyboardButton(
                     text="🔒 ضبط القناة الإجبارية",
                     callback_data="admin:set_channel",
                 ),
+            ],
+            [
                 InlineKeyboardButton(
                     text="❌ إغلاق اللوحة",
                     callback_data="admin:close",
@@ -189,6 +196,35 @@ async def handle_admin_callbacks(callback: CallbackQuery):
             )
 
         await callback.answer("✅ تم تحديث الإحصائيات.")
+        return
+
+    # -------------------------
+    # VIP LIST
+    # -------------------------
+
+    if action == "vip_list":
+        vips = get_vip_users_list()
+        if not vips:
+            panel_text = (
+                "⭐ <b>قائمة المشتركين في باقة VIP:</b>\n\n"
+                "لا يوجد مشتركين نشطين حالياً في النظام."
+            )
+        else:
+            panel_text = f"⭐ <b>قائمة المشتركين النشطين في VIP ({len(vips)} مشترك):</b>\n\n"
+            for idx, v in enumerate(vips[:25], 1):
+                panel_text += (
+                    f"{idx}. 👤 <b>الـ ID:</b> <code>{v['user_id']}</code>\n"
+                    f"   📅 <b>ينتهي في:</b> <code>{v['expire_date']}</code> "
+                    f"(متبقي <code>{v['days_left']}</code> يوم)\n"
+                )
+
+        if callback.message:
+            await callback.message.edit_text(
+                panel_text,
+                reply_markup=get_admin_keyboard(),
+                parse_mode="HTML",
+            )
+        await callback.answer("⭐ تم جلب قائمة المشتركين.")
         return
 
     # -------------------------

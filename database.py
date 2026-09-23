@@ -224,6 +224,27 @@ def get_all_user_ids() -> list:
     return db.get("users", [])
 
 
+def get_vip_users_list() -> list[dict]:
+    """Returns list of dicts with user_id, expire_date, and days_left for active VIP subscribers."""
+    db = load_db()
+    vip_until = db.get("vip_until", {})
+    current_time = time.time()
+    active_vips = []
+
+    for uid_str, exp_timestamp in vip_until.items():
+        if exp_timestamp > current_time:
+            dt_str = datetime.fromtimestamp(exp_timestamp).strftime("%Y-%m-%d %H:%M")
+            days_left = max(0, int((exp_timestamp - current_time) / 86400))
+            active_vips.append({
+                "user_id": int(uid_str),
+                "expire_date": dt_str,
+                "days_left": days_left
+            })
+
+    active_vips.sort(key=lambda x: x["days_left"])
+    return active_vips
+
+
 def get_stats() -> dict:
     db = load_db()
     vip_count = 0

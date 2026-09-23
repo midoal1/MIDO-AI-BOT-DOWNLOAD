@@ -259,8 +259,23 @@ async def handle_check_sub(callback: CallbackQuery):
 
 @router.callback_query(F.data == "toggle_fast")
 async def handle_toggle_fast(callback: CallbackQuery):
-    is_fast = toggle_fast_mode(callback.from_user.id)
-    ulang = get_user_lang(callback.from_user.id, callback.from_user.language_code)
+    user_id = callback.from_user.id
+    ulang = get_user_lang(user_id, callback.from_user.language_code)
+
+    vip_active, exp_date = is_vip(user_id)
+    if not vip_active and not is_admin(user_id):
+        alert_msg = (
+            "⚠️ <b>عذراً، ميزة الوضع السريع مخصصة حصرياً لمشتركي باقة VIP فقط!</b>\n\n"
+            "قم بالترقية إلى باقة VIP للتمتع بالتنزيل المباشر الفوري والتنزيلات غير المحدودة."
+        ) if ulang == "ar" else (
+            "⚠️ <b>Sorry, Fast Mode is an exclusive VIP feature!</b>\n\n"
+            "Upgrade to VIP for instant direct downloads and unlimited access."
+        )
+        await callback.answer("⚠️ ميزة الوضع السريع حصرية لمشتركي VIP فقط!", show_alert=True)
+        await callback.message.answer(alert_msg, reply_markup=get_vip_upgrade_keyboard(ulang), parse_mode="HTML")
+        return
+
+    is_fast = toggle_fast_mode(user_id)
     t = TEXTS[ulang]
     
     msg = "⚡ تم تفعيل الوضع السريع للتنزيل المباشر!" if is_fast else "⚡ تم إيقاف الوضع السريع ورجوع الأزرار."
@@ -274,13 +289,12 @@ async def handle_toggle_fast(callback: CallbackQuery):
     if ulang == "en":
         fast_status = "ON 🟢" if is_fast else "OFF 🔴"
 
-    vip_active, exp_date = is_vip(callback.from_user.id)
     vip_status = f"مشترك VIP ⭐ (حتى {exp_date})" if vip_active else "حساب مجاني 🆓 (5 تنزيلات/يوم)"
     if ulang == "en":
         vip_status = f"VIP Active ⭐ (until {exp_date})" if vip_active else "Free Tier 🆓 (5 daily downloads)"
 
     welcome_text = t["welcome"].format(user_count=stats["user_count"], fast_status=fast_status, vip_status=vip_status)
-    keyboard = get_main_keyboard(ulang, is_fast, callback.from_user.id)
+    keyboard = get_main_keyboard(ulang, is_fast, user_id)
     await safe_edit_status(callback.message, welcome_text, reply_markup=keyboard)
 
 
