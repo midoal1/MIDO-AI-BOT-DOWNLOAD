@@ -560,16 +560,18 @@ async def handle_video_link(message: Message):
             if author:
                 msg_text += f"👤 " + ("المصدر" if ulang == "ar" else "Author") + f": <code>{author}</code>\n"
 
-            msg_text += t["select_option"]
+            play_btn_text = "▶️ تشغيل الأغنية/الصوت فوراً (MP3)" if ulang == "ar" else "▶️ Play MP3 Audio Now"
 
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text=play_btn_text, callback_data=f"dl:mp3:{url_id}")
+                    ],
                     [
                         InlineKeyboardButton(text=t["btn_video_720"], callback_data=f"dl:720:{url_id}"),
                         InlineKeyboardButton(text=t["btn_video_480"], callback_data=f"dl:480:{url_id}"),
                     ],
                     [
-                        InlineKeyboardButton(text=t["btn_audio_mp3"], callback_data=f"dl:mp3:{url_id}"),
                         InlineKeyboardButton(text=t["btn_gif"], callback_data=f"dl:gif:{url_id}"),
                     ]
                 ]

@@ -178,6 +178,9 @@ async def search_video_by_query(query: str) -> dict | None:
     def _search():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(query, download=False)
+            if not info or "entries" not in info or len(info.get("entries", [])) == 0:
+                info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+
             if info and "entries" in info and len(info["entries"]) > 0:
                 entry = info["entries"][0]
                 if not entry:
