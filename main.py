@@ -15,11 +15,57 @@ from handlers import router
 from admin import admin_router
 from subscriptions import sub_router
 
+from aiogram.types import BotCommand
+from database import get_stats
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
+
+async def setup_bot_profile(bot: Bot):
+    try:
+        commands = [
+            BotCommand(command="start", description="🚀 بدء استخدام البوت / Main Menu"),
+            BotCommand(command="help", description="❓ دليل التعليمات / Help & Guide"),
+            BotCommand(command="vip", description="⭐ باقة الـ VIP / VIP Membership"),
+            BotCommand(command="stats", description="📊 إحصائيات البوت / Statistics"),
+            BotCommand(command="admin", description="👑 لوحة التحكم / Admin Panel"),
+        ]
+        await bot.set_my_commands(commands)
+
+        desc_ar = (
+            "🤖 أهلاً بك في بوت تنزيل الفيديوهات والصوتيات الشامل!\n\n"
+            "🎬 المنصات المدعومة:\n"
+            "• 🎵 TikTok (فيديوهات بدون علامة مائية + ألبومات الصور)\n"
+            "• 🔴 YouTube & Shorts\n"
+            "• 📸 Instagram Reels & Posts\n"
+            "• 🐦 Twitter / X & Facebook\n"
+            "• 📌 Pinterest وجميع مواقع الفيديوهات الأخرى!\n\n"
+            "أرسل رابط أي فيديو لبدء التنزيل الفوري 🚀"
+        )
+        await bot.set_my_description(description=desc_ar, language_code="ar")
+
+        desc_en = (
+            "🤖 Welcome to Video & Audio Downloader Bot!\n\n"
+            "🎬 Supported Platforms:\n"
+            "• 🎵 TikTok (No Watermark + Photo Albums)\n"
+            "• 🔴 YouTube & Shorts\n"
+            "• 📸 Instagram Reels & Posts\n"
+            "• 🐦 Twitter / X & Facebook\n"
+            "• 📌 Pinterest & all video sites!\n\n"
+            "Send any video link to download 🚀"
+        )
+        await bot.set_my_description(description=desc_en, language_code="en")
+
+        stats = get_stats()
+        u_count = stats.get("user_count", 0)
+        short_desc = f"👥 عدد المستخدمين: {u_count} | 🎬 تنزيل الفيديوهات والصوتيات بدون علامة مائية"
+        await bot.set_my_short_description(short_description=short_desc)
+        logging.info("Bot profile commands and descriptions setup successfully.")
+    except Exception as e:
+        logging.warning(f"Could not setup bot profile metadata: {e}")
 
 async def main():
     if not validate_config():
@@ -31,6 +77,8 @@ async def main():
     dp.include_router(sub_router)
     dp.include_router(router)
     
+    await setup_bot_profile(bot)
+
     print("🚀 جاري تشغيل بوت تنزيل الفيديوهات والصوتيات مع نظام الاشتراكات والـ VIP...")
     print("اضغط Ctrl+C لإيقاف البوت في أي وقت.\n")
     

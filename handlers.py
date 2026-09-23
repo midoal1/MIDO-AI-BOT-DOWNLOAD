@@ -16,7 +16,7 @@ from downloader import (
 from database import (
     register_user, get_user_lang, set_user_lang,
     get_stats, is_fast_mode, toggle_fast_mode, get_force_channel,
-    is_vip, check_daily_limit, record_download
+    is_vip, check_daily_limit, record_download, is_admin
 )
 from subscriptions import get_vip_upgrade_keyboard
 
@@ -166,30 +166,34 @@ async def safe_edit_status(message: Message, text: str, reply_markup=None):
         return message
 
 
-def get_main_keyboard(current_lang: str, is_fast: bool):
+def get_main_keyboard(current_lang: str, is_fast: bool, user_id: int = None):
     ar_mark = " ✅" if current_lang == "ar" else ""
     en_mark = " ✅" if current_lang == "en" else ""
     fast_text = "⚡ الوضع السريع: مفعل 🟢" if is_fast else "⚡ الوضع السريع: معطل 🔴"
     if current_lang == "en":
         fast_text = "⚡ Fast Mode: ON 🟢" if is_fast else "⚡ Fast Mode: OFF 🔴"
 
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text=f"🇸🇦 العربية{ar_mark}", callback_data="set_lang:ar"),
-                InlineKeyboardButton(text=f"🇬🇧 English{en_mark}", callback_data="set_lang:en"),
-            ],
-            [
-                InlineKeyboardButton(text=fast_text, callback_data="toggle_fast"),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="⭐ " + ("ترقية إلى باقة VIP" if current_lang == "ar" else "Upgrade to VIP"),
-                    callback_data="vip_upgrade"
-                )
-            ]
+    rows = [
+        [
+            InlineKeyboardButton(text=f"🇸🇦 العربية{ar_mark}", callback_data="set_lang:ar"),
+            InlineKeyboardButton(text=f"🇬🇧 English{en_mark}", callback_data="set_lang:en"),
+        ],
+        [
+            InlineKeyboardButton(text=fast_text, callback_data="toggle_fast"),
+        ],
+        [
+            InlineKeyboardButton(
+                text="⭐ " + ("ترقية إلى باقة VIP" if current_lang == "ar" else "Upgrade to VIP"),
+                callback_data="vip_upgrade"
+            )
         ]
-    )
+    ]
+
+    if user_id and is_admin(user_id):
+        admin_btn = "👑 لوحة التحكم (الأدمن)" if current_lang == "ar" else "👑 Admin Panel"
+        rows.append([InlineKeyboardButton(text=admin_btn, callback_data="open_admin_panel")])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @router.message(CommandStart())
@@ -217,7 +221,7 @@ async def start_handler(message: Message):
 
     t = TEXTS[ulang]
     welcome_text = t["welcome"].format(user_count=user_count, fast_status=fast_status, vip_status=vip_status)
-    keyboard = get_main_keyboard(ulang, is_fast)
+    keyboard = get_main_keyboard(ulang, is_fast, message.from_user.id)
     await message.answer(welcome_text, reply_markup=keyboard, parse_mode="HTML")
 
 
@@ -276,7 +280,7 @@ async def handle_toggle_fast(callback: CallbackQuery):
         vip_status = f"VIP Active ⭐ (until {exp_date})" if vip_active else "Free Tier 🆓 (5 daily downloads)"
 
     welcome_text = t["welcome"].format(user_count=stats["user_count"], fast_status=fast_status, vip_status=vip_status)
-    keyboard = get_main_keyboard(ulang, is_fast)
+    keyboard = get_main_keyboard(ulang, is_fast, callback.from_user.id)
     await safe_edit_status(callback.message, welcome_text, reply_markup=keyboard)
 
 
@@ -299,8 +303,34 @@ async def handle_set_language(callback: CallbackQuery):
         vip_status = f"VIP Active ⭐ (until {exp_date})" if vip_active else "Free Tier 🆓 (5 daily downloads)"
 
     welcome_text = t["welcome"].format(user_count=stats["user_count"], fast_status=fast_status, vip_status=vip_status)
-    keyboard = get_main_keyboard(new_lang, is_fast)
+    keyboard = get_main_keyboard(new_lang, is_fast, callback.from_user.id)
     await safe_edit_status(callback.message, welcome_text, reply_markup=keyboard)
+
+
+@router.callback_query(F.data == "open_admin_panel")
+async def handle_open_admin_panel(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⚠️ عذراً، هذا الخيار للأدمن فقط.", show_alert=True)
+        return
+
+    await callback.answer()
+    stats = get_stats()
+
+    force_chan = stats.get("force_channel") or "غير محددة (معطلة)"
+    user_count = stats.get("user_count", 0)
+    total_downloads = stats.get("total_downloads", 0)
+
+    panel_text = (
+        "👑 <b>لوحة تحكم أدمن البوت (محمية 🔐):</b>\n\n"
+        f"👤 <b>معرف الأدمن:</b> <code>{callback.from_user.id}</code>\n"
+        f"👥 <b>إجمالي المستخدمين:</b> <code>{user_count}</code>\n"
+        f"📥 <b>إجمالي التحميلات:</b> <code>{total_downloads}</code>\n"
+        f"🔒 <b>القناة الإجبارية الحالية:</b> <code>{force_chan}</code>\n\n"
+        "اختر أحد الخيارات التالية للإدارة:"
+    )
+
+    from admin import get_admin_keyboard
+    await callback.message.answer(panel_text, reply_markup=get_admin_keyboard(), parse_mode="HTML")
 
 
 @router.message(Command("stats"))
@@ -368,8 +398,29 @@ async def handle_video_link(message: Message):
         await status_msg.edit_text(t["downloading_video"].format(quality="720"), parse_mode="HTML")
         download_data = await download_video_quality(url, "720")
         if download_data and download_data.get("file_path"):
-            record_download(message.from_user.id)
             file_path = download_data["file_path"]
+            file_size_mb = download_data.get("file_size_mb") or (os.path.getsize(file_path) / (1024 * 1024))
+            if file_size_mb > 49.5:
+                cleanup_file(file_path)
+                url_id = str(uuid.uuid4())[:8]
+                URL_CACHE[url_id] = url
+                opt_buttons = [
+                    [InlineKeyboardButton(text="📺 تنزيل بجودة 480p SD" if ulang == "ar" else "📺 Try 480p Quality", callback_data=f"dl:480:{url_id}")],
+                    [InlineKeyboardButton(text="🎵 استخراج الصوت MP3" if ulang == "ar" else "🎵 Extract MP3 Audio", callback_data=f"dl:mp3:{url_id}")]
+                ]
+                large_msg = (
+                    f"⚠️ <b>حجم الفيديو كبير جداً ({file_size_mb:.1f} ميجابايت).</b>\n\n"
+                    f"تسمح سياسة تليجرام للبوتات بإرسال ملفات حتى 50 ميجابايت فقط.\n"
+                    f"اختر الجودة البديلة أو الصوت فقط بالأسفل:"
+                ) if ulang == "ar" else (
+                    f"⚠️ <b>Video is too large ({file_size_mb:.1f} MB).</b>\n\n"
+                    f"Telegram bot API limit is 50MB.\n"
+                    f"Choose lower quality or audio only below:"
+                )
+                await status_msg.edit_text(large_msg, reply_markup=InlineKeyboardMarkup(inline_keyboard=opt_buttons), parse_mode="HTML")
+                return
+
+            record_download(message.from_user.id)
             title = html.escape(download_data.get("title", ""))
             caption = f"🎬 <b>{title[:80]}</b>\n🤖 @MIDOALIAIBOT"
             await message.answer_video(video=FSInputFile(file_path), caption=caption, parse_mode="HTML")
@@ -516,9 +567,51 @@ async def handle_download_option(callback: CallbackQuery):
                 await safe_edit_status(callback.message, t["error_download"])
                 return
 
-            file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-            if file_size_mb > 50:
-                await safe_edit_status(callback.message, t["error_size"].format(size=file_size_mb))
+            file_size_mb = download_data.get("file_size_mb") or (os.path.getsize(file_path) / (1024 * 1024))
+            if file_size_mb > 49.5:
+                cleanup_file(file_path)
+                download_data["file_path"] = None
+
+                opt_buttons = []
+                if mode == "720":
+                    opt_buttons.append([
+                        InlineKeyboardButton(
+                            text="📺 تنزيل بجودة 480p SD" if ulang == "ar" else "📺 Try 480p Quality",
+                            callback_data=f"dl:480:{url_id}"
+                        )
+                    ])
+                elif mode == "480":
+                    opt_buttons.append([
+                        InlineKeyboardButton(
+                            text="📺 تنزيل بجودة 360p" if ulang == "ar" else "📺 Try 360p Quality",
+                            callback_data=f"dl:360:{url_id}"
+                        )
+                    ])
+
+                opt_buttons.append([
+                    InlineKeyboardButton(
+                        text="🎵 استخراج الصوت MP3 فقط" if ulang == "ar" else "🎵 Extract MP3 Audio Only",
+                        callback_data=f"dl:mp3:{url_id}"
+                    )
+                ])
+
+                large_msg = (
+                    f"⚠️ <b>حجم الفيديو كبير جداً ({file_size_mb:.1f} ميجابايت).</b>\n\n"
+                    f"تسمح سياسة خوادم تليجرام للبوتات بإرسال ملفات حتى 50 ميجابايت فقط.\n"
+                    f"الجودة المطلوبة ({mode}p) تجاوزت هذا الحد.\n\n"
+                    f"💡 <b>اختر إما تنزيل بجودة أقل أو استخراج الصوت فقط:</b>"
+                ) if ulang == "ar" else (
+                    f"⚠️ <b>Video file is too large ({file_size_mb:.1f} MB).</b>\n\n"
+                    f"Telegram bot API limits uploads to 50MB max.\n"
+                    f"The requested quality ({mode}p) exceeded this limit.\n\n"
+                    f"💡 <b>Choose a lower quality or extract audio:</b>"
+                )
+
+                await safe_edit_status(
+                    callback.message,
+                    large_msg,
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=opt_buttons)
+                )
                 return
 
             await safe_edit_status(callback.message, t["uploading"])

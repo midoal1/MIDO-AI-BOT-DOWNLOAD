@@ -14,6 +14,7 @@ from database import (
     get_stats,
     get_all_user_ids,
     set_force_channel,
+    is_admin,
 )
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,14 @@ admin_router = Router()
 ADMIN_ID = 8784484645
 
 # حالة الأدمن المؤقتة
-ADMIN_STATE: dict[int, str] = {}
+ADMIN_STATE: dict = {}
+
+
+def get_admin_state(user_id: int):
+    val = ADMIN_STATE.get(user_id)
+    if isinstance(val, dict):
+        return val.get("state")
+    return val
 
 
 def get_admin_keyboard() -> InlineKeyboardMarkup:
@@ -55,7 +63,7 @@ def get_admin_keyboard() -> InlineKeyboardMarkup:
 
 
 def is_owner(user_id: int) -> bool:
-    return user_id == ADMIN_ID
+    return is_admin(user_id) or user_id == ADMIN_ID
 
 
 # =========================================================
@@ -210,6 +218,79 @@ async def handle_admin_callbacks(callback: CallbackQuery):
 
         return
 
+    if action == "confirm_bc":
+        st = ADMIN_STATE.get(callback.from_user.id)
+        if not isinstance(st, dict) or st.get("state") != "confirm_broadcast" or "message" not in st:
+            await callback.answer("⚠️ انتهت صلاحية الطلب أو تم إلغاء الإذاعة.", show_alert=True)
+            return
+
+        bc_msg: Message = st["message"]
+        ADMIN_STATE.pop(callback.from_user.id, None)
+
+        user_ids = get_all_user_ids()
+        if not user_ids:
+            await callback.answer()
+            if callback.message:
+                await callback.message.answer(
+                    "⚠️ لا يوجد مستخدمون مسجلون في البوت لإرسال الإذاعة إليهم.",
+                    reply_markup=get_admin_keyboard(),
+                )
+            return
+
+        await callback.answer("🚀 جاري بدء الإذاعة...")
+        if callback.message:
+            await callback.message.edit_reply_markup(reply_markup=None)
+
+        success_count = 0
+        failed_count = 0
+        skipped_count = 0
+
+        status_message = await callback.message.answer(
+            f"📢 جاري إرسال الإذاعة إلى {len(user_ids)} مستخدم..."
+        )
+
+        for target_user_id in user_ids:
+            try:
+                target_user_id = int(target_user_id)
+
+                if target_user_id == callback.from_user.id:
+                    skipped_count += 1
+                    continue
+
+                await bc_msg.send_copy(chat_id=target_user_id)
+                success_count += 1
+
+            except Exception as exc:
+                failed_count += 1
+                logger.warning(
+                    "Broadcast failed for user %s: %s",
+                    target_user_id,
+                    exc,
+                )
+
+            await asyncio.sleep(0.05)
+
+        await status_message.edit_text(
+            "✅ <b>انتهت الإذاعة العامة بنجاح!</b>\n\n"
+            f"📨 تم الإرسال بنجاح: <code>{success_count}</code>\n"
+            f"❌ فشل الإرسال: <code>{failed_count}</code>\n"
+            f"⏭ تم التخطي: <code>{skipped_count}</code>",
+            parse_mode="HTML",
+            reply_markup=get_admin_keyboard(),
+        )
+        return
+
+    if action == "cancel_bc":
+        ADMIN_STATE.pop(callback.from_user.id, None)
+        await callback.answer("❌ تم إلغاء الإذاعة.")
+        if callback.message:
+            await callback.message.edit_reply_markup(reply_markup=None)
+            await callback.message.answer(
+                "❌ تم إلغاء عملية الإذاعة.",
+                reply_markup=get_admin_keyboard(),
+            )
+        return
+
     # -------------------------
     # FORCE CHANNEL
     # -------------------------
@@ -242,8 +323,8 @@ async def handle_admin_callbacks(callback: CallbackQuery):
 @admin_router.message(
     lambda message: (
         message.from_user is not None
-        and message.from_user.id == ADMIN_ID
-        and ADMIN_STATE.get(message.from_user.id) == "broadcast"
+        and is_owner(message.from_user.id)
+        and get_admin_state(message.from_user.id) in ["broadcast", "confirm_broadcast"]
     )
 )
 async def handle_broadcast(message: Message):
@@ -265,60 +346,40 @@ async def handle_broadcast(message: Message):
             )
             return
 
+    # حفظ الرسالة للمعاينة والتأكيد
+    ADMIN_STATE[user_id] = {
+        "state": "confirm_broadcast",
+        "message": message,
+    }
+
     user_ids = get_all_user_ids()
+    total_users = len(user_ids)
 
-    if not user_ids:
-        ADMIN_STATE.pop(user_id, None)
-
-        await message.answer(
-            "⚠️ لا يوجد مستخدمون مسجلون في البوت لإرسال الإذاعة إليهم.",
-            reply_markup=get_admin_keyboard(),
-        )
-        return
-
-    success_count = 0
-    failed_count = 0
-    skipped_count = 0
-
-    status_message = await message.answer(
-        f"📢 جاري إرسال الإذاعة إلى {len(user_ids)} مستخدم..."
+    await message.answer(
+        f"👁️ <b>معاينة رسالة الإذاعة العامة (Preview):</b>\n\n"
+        f"👥 سيتم إرسالها إلى: <code>{total_users}</code> مستخدم\n"
+        f"👇 الرسالة المعروضة أدناه هي الشكل الدقيق الذي سيصله المستلمون:",
+        parse_mode="HTML",
     )
 
-    for target_user_id in user_ids:
-        try:
-            target_user_id = int(target_user_id)
+    confirm_keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ تأكيد وإرسال الإذاعة",
+                    callback_data="admin:confirm_bc",
+                ),
+                InlineKeyboardButton(
+                    text="❌ إلغاء الإذاعة",
+                    callback_data="admin:cancel_bc",
+                ),
+            ]
+        ]
+    )
 
-            # لا نرسل للأدمن نفسه
-            if target_user_id == ADMIN_ID:
-                skipped_count += 1
-                continue
-
-            await message.send_copy(
-                chat_id=target_user_id
-            )
-
-            success_count += 1
-
-        except Exception as exc:
-            failed_count += 1
-
-            logger.warning(
-                "Broadcast failed for user %s: %s",
-                target_user_id,
-                exc,
-            )
-
-        # منع Flood Control
-        await asyncio.sleep(0.05)
-
-    ADMIN_STATE.pop(user_id, None)
-
-    await status_message.edit_text(
-        "✅ <b>انتهت الإذاعة العامة.</b>\n\n"
-        f"📨 تم الإرسال بنجاح: <code>{success_count}</code>\n"
-        f"❌ فشل الإرسال: <code>{failed_count}</code>\n"
-        f"⏭ تم التخطي: <code>{skipped_count}</code>",
-        parse_mode="HTML",
+    await message.send_copy(
+        chat_id=user_id,
+        reply_markup=confirm_keyboard,
     )
 
 
@@ -327,12 +388,11 @@ async def handle_broadcast(message: Message):
 # =========================================================
 
 @admin_router.message(
-    F.text,
     lambda message: (
         message.from_user is not None
-        and message.from_user.id == ADMIN_ID
-        and ADMIN_STATE.get(message.from_user.id) == "set_channel"
-    ),
+        and is_owner(message.from_user.id)
+        and get_admin_state(message.from_user.id) == "set_channel"
+    )
 )
 async def handle_set_channel(message: Message):
     if message.from_user is None:

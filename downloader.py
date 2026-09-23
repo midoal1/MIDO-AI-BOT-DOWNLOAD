@@ -309,6 +309,12 @@ async def download_video_quality(url: str, quality: str) -> dict | None:
             '/best[height<=480]'
             '/best'
         ),
+        "360": (
+            'bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]'
+            '/bestvideo[height<=360]+bestaudio'
+            '/best[height<=360]'
+            '/best'
+        ),
     }
     fmt_spec = quality_formats.get(quality, quality_formats["720"])
 
@@ -347,20 +353,12 @@ async def download_video_quality(url: str, quality: str) -> dict | None:
 
         if res and res.get("file_path") and os.path.exists(res["file_path"]):
             size_mb = os.path.getsize(res["file_path"]) / (1024 * 1024)
-            if size_mb <= 49.5:
-                return res
-            else:
-                logger.info(f"File {size_mb:.1f}MB > 49.5MB — retrying at 480p")
-                cleanup_file(res["file_path"])
-                if quality != "480":
-                    return await download_video_quality(url, "480")
+            res["file_size_mb"] = size_mb
+            res["requested_quality"] = quality
+            return res
 
     except Exception as e:
         logger.error(f"Video download error ({quality}p): {e}")
-        # Fallback: لو 720 فشل جرّب 480
-        if quality == "720":
-            logger.info("Falling back to 480p...")
-            return await download_video_quality(url, "480")
 
     return None
 
