@@ -15,6 +15,8 @@ from handlers import router
 from admin import admin_router
 from subscriptions import sub_router
 
+import os
+from aiohttp import web
 from aiogram.types import BotCommand
 from database import get_stats
 
@@ -23,6 +25,25 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
+
+async def handle_health_check(request):
+    return web.Response(text="Bot is live 🚀")
+
+async def start_dummy_web_server():
+    port_str = os.getenv("PORT")
+    if port_str:
+        try:
+            port = int(port_str)
+            app = web.Application()
+            app.router.add_get("/", handle_health_check)
+            app.router.add_get("/health", handle_health_check)
+            runner = web.AppRunner(app)
+            await runner.setup()
+            site = web.TCPSite(runner, "0.0.0.0", port)
+            await site.start()
+            logging.info(f"Health check web server running on port {port}")
+        except Exception as e:
+            logging.warning(f"Could not start dummy web server: {e}")
 
 async def setup_bot_profile(bot: Bot):
     try:
@@ -77,6 +98,7 @@ async def main():
     dp.include_router(sub_router)
     dp.include_router(router)
     
+    await start_dummy_web_server()
     await setup_bot_profile(bot)
 
     print("🚀 جاري تشغيل بوت تنزيل الفيديوهات والصوتيات مع نظام الاشتراكات والـ VIP...")
