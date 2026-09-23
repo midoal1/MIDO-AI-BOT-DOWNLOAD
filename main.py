@@ -52,7 +52,6 @@ async def setup_bot_profile(bot: Bot):
             BotCommand(command="help", description="❓ دليل التعليمات / Help & Guide"),
             BotCommand(command="vip", description="⭐ باقة الـ VIP / VIP Membership"),
             BotCommand(command="stats", description="📊 إحصائيات البوت / Statistics"),
-            BotCommand(command="admin", description="👑 لوحة التحكم / Admin Panel"),
         ]
         await bot.set_my_commands(commands)
 
