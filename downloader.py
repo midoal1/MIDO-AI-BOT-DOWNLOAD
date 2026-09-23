@@ -169,14 +169,24 @@ async def search_video_by_query(query: str) -> dict | None:
     if not query:
         return None
 
-    ydl_opts = _base_ydl_opts({'skip_download': True})
+    ydl_opts = _base_ydl_opts({
+        'skip_download': True,
+        'default_search': 'ytsearch1',
+        'extract_flat': 'in_playlist'
+    })
 
     def _search():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+            info = ydl.extract_info(query, download=False)
             if info and "entries" in info and len(info["entries"]) > 0:
                 entry = info["entries"][0]
-                video_url = entry.get("webpage_url") or entry.get("url") or f"https://www.youtube.com/watch?v={entry.get('id')}"
+                if not entry:
+                    return None
+                vid = entry.get("id") or entry.get("url")
+                v_url = entry.get("webpage_url") or entry.get("url")
+                if not v_url or not v_url.startswith("http"):
+                    v_url = f"https://www.youtube.com/watch?v={vid}"
+
                 thumb = entry.get("thumbnail")
                 if not thumb and entry.get("thumbnails"):
                     thumb = entry["thumbnails"][-1].get("url")
@@ -185,7 +195,7 @@ async def search_video_by_query(query: str) -> dict | None:
                     "author": (entry.get("uploader") or entry.get("channel") or "YouTube"),
                     "duration": entry.get("duration", 0),
                     "platform": "YouTube Search",
-                    "url": video_url,
+                    "url": v_url,
                     "thumbnail": thumb,
                 }
             return None
@@ -204,26 +214,35 @@ async def search_videos_inline(query: str, max_results: int = 5) -> list[dict]:
     if not query:
         return []
 
-    ydl_opts = _base_ydl_opts({'skip_download': True})
+    ydl_opts = _base_ydl_opts({
+        'skip_download': True,
+        'default_search': f'ytsearch{max_results}',
+        'extract_flat': 'in_playlist'
+    })
 
     def _search_multi():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"ytsearch{max_results}:{query}", download=False)
+            info = ydl.extract_info(query, download=False)
             results = []
             if info and "entries" in info:
                 for entry in info["entries"][:max_results]:
                     if not entry:
                         continue
-                    video_url = entry.get("webpage_url") or entry.get("url") or f"https://www.youtube.com/watch?v={entry.get('id')}"
+                    vid = entry.get("id") or entry.get("url")
+                    v_url = entry.get("webpage_url") or entry.get("url")
+                    if not v_url or not v_url.startswith("http"):
+                        v_url = f"https://www.youtube.com/watch?v={vid}"
+
                     thumb = entry.get("thumbnail")
                     if not thumb and entry.get("thumbnails"):
                         thumb = entry["thumbnails"][-1].get("url")
+
                     results.append({
-                        "id": entry.get("id") or str(uuid.uuid4())[:8],
+                        "id": vid or str(uuid.uuid4())[:8],
                         "title": entry.get("title", "فيديو")[:80],
                         "author": (entry.get("uploader") or entry.get("channel") or "YouTube"),
                         "duration": entry.get("duration", 0),
-                        "url": video_url,
+                        "url": v_url,
                         "thumbnail": thumb,
                     })
             return results
