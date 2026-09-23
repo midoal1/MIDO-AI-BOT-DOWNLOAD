@@ -7,11 +7,13 @@ from aiogram import Router, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
-    FSInputFile, InputMediaPhoto
+    FSInputFile, InputMediaPhoto, InlineQuery, InlineQueryResultArticle,
+    InputTextMessageContent
 )
 from downloader import (
     extract_info, download_video_quality, download_audio,
-    convert_video_to_gif, cleanup_file
+    convert_video_to_gif, cleanup_file, search_video_by_query,
+    search_videos_inline, extract_playlist_info
 )
 from database import (
     register_user, get_user_lang, set_user_lang,
@@ -25,8 +27,10 @@ router = Router()
 
 URL_PATTERN = re.compile(r'https?://[^\s]+')
 
-# Memory cache for active video URLs
+# Memory caches
 URL_CACHE = {}
+SEARCH_STATE = {}
+PLAYLIST_CACHE = {}
 
 TEXTS = {
     "ar": {
@@ -173,7 +177,12 @@ def get_main_keyboard(current_lang: str, is_fast: bool, user_id: int = None):
     if current_lang == "en":
         fast_text = "⚡ Fast Mode: ON 🟢" if is_fast else "⚡ Fast Mode: OFF 🔴"
 
+    search_btn_text = "🔍 بحث عن فيديو / أغنية" if current_lang == "ar" else "🔍 Search Video / Song"
+
     rows = [
+        [
+            InlineKeyboardButton(text=search_btn_text, callback_data="btn_search_prompt")
+        ],
         [
             InlineKeyboardButton(text=f"🇸🇦 العربية{ar_mark}", callback_data="set_lang:ar"),
             InlineKeyboardButton(text=f"🇬🇧 English{en_mark}", callback_data="set_lang:en"),
@@ -347,6 +356,67 @@ async def handle_open_admin_panel(callback: CallbackQuery):
     await callback.message.answer(panel_text, reply_markup=get_admin_keyboard(), parse_mode="HTML")
 
 
+@router.callback_query(F.data == "btn_search_prompt")
+async def handle_search_prompt(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    ulang = get_user_lang(user_id, callback.from_user.language_code)
+    SEARCH_STATE[user_id] = "awaiting_search_query"
+    await callback.answer()
+
+    prompt_text = (
+        "🔎 <b>قسم البحث المباشر عن الفيديوهات والصوتيات:</b>\n\n"
+        "أرسل الآن اسم الفيديو أو الأغنية باللغة العربية أو الإنجليزية.\n\n"
+        "<i>مثال:</i> <code>البخت ويجز</code> أو <code>El Bakht Wegz</code>"
+    ) if ulang == "ar" else (
+        "🔎 <b>Direct Video & Song Search:</b>\n\n"
+        "Send the video or song name in Arabic or English.\n\n"
+        "<i>Example:</i> <code>El Bakht Wegz</code>"
+    )
+    await callback.message.answer(prompt_text, parse_mode="HTML")
+
+
+@router.inline_query()
+async def inline_search_handler(inline_query: InlineQuery):
+    query = (inline_query.query or "").strip()
+    if not query:
+        item = InlineQueryResultArticle(
+            id="help",
+            title="🔍 اكتب اسم أغنية أو فيديو للبحث...",
+            description="مثال: @MIDOALIAIBOT البخت ويجز",
+            input_message_content=InputTextMessageContent(
+                message_text="🤖 أرسل رابط الفيديو أو اكتب اسم الأغنية لبدء التنزيل!",
+                parse_mode="HTML"
+            )
+        )
+        await inline_query.answer([item], cache_time=60)
+        return
+
+    results_data = await search_videos_inline(query, max_results=5)
+    articles = []
+    for res in results_data:
+        title = html.escape(res.get("title", ""))
+        author = html.escape(res.get("author", ""))
+        url = res.get("url", "")
+        thumb = res.get("thumbnail")
+
+        msg_content = InputTextMessageContent(
+            message_text=f"🎬 <b>{title}</b>\n👤 المصدر: {author}\n🔗 {url}\n\n🤖 @MIDOALIAIBOT",
+            parse_mode="HTML"
+        )
+
+        articles.append(
+            InlineQueryResultArticle(
+                id=res["id"],
+                title=res["title"],
+                description=f"👤 {author}",
+                thumbnail_url=thumb if (thumb and thumb.startswith("http")) else None,
+                input_message_content=msg_content
+            )
+        )
+
+    await inline_query.answer(articles, cache_time=300)
+
+
 @router.message(Command("stats"))
 async def stats_handler(message: Message):
     stats = get_stats()
@@ -373,22 +443,78 @@ async def help_handler(message: Message):
     await message.answer(t["help"], parse_mode="HTML")
 
 
+@router.callback_query(F.data.startswith("dl_pl:"))
+async def handle_playlist_download(callback: CallbackQuery):
+    parts = callback.data.split(":")
+    mode = parts[1]
+    pl_id = parts[2]
+
+    user_id = callback.from_user.id
+    ulang = get_user_lang(user_id, callback.from_user.language_code)
+
+    pl_info = PLAYLIST_CACHE.get(pl_id)
+    if not pl_info or not pl_info.get("items"):
+        await callback.answer("⚠️ " + ("انتهت صلاحية قائمة التشغيل." if ulang == "ar" else "Playlist session expired."), show_alert=True)
+        return
+
+    await callback.answer()
+    items = pl_info["items"]
+    status_msg = await safe_edit_status(
+        callback.message,
+        f"⏳ <b>جاري بدء تنزيل قائمة التشغيل ({len(items)} فيديو)...</b>" if ulang == "ar" else f"⏳ <b>Starting playlist download ({len(items)} videos)...</b>"
+    )
+
+    completed = 0
+    for idx, item in enumerate(items, 1):
+        v_url = item["url"]
+        try:
+            if mode == "mp3":
+                dl_res = await download_audio(v_url)
+            else:
+                dl_res = await download_video_quality(v_url, "480")
+
+            if dl_res and dl_res.get("file_path") and os.path.exists(dl_res["file_path"]):
+                fp = dl_res["file_path"]
+                title = html.escape(dl_res.get("title", item.get("title", "")))
+                caption = f"📁 [{idx}/{len(items)}] <b>{title[:70]}</b>\n🤖 @MIDOALIAIBOT"
+
+                input_file = FSInputFile(fp)
+                if mode == "mp3":
+                    await callback.message.answer_audio(audio=input_file, caption=caption, parse_mode="HTML")
+                else:
+                    await callback.message.answer_video(video=input_file, caption=caption, parse_mode="HTML")
+
+                cleanup_file(fp)
+                record_download(user_id)
+                completed += 1
+        except Exception as e:
+            logger.warning(f"Playlist item {idx} download failed: {e}")
+
+        await asyncio.sleep(0.5)
+
+    await callback.message.answer(
+        f"✅ <b>تم انتهاء تنزيل قائمة التشغيل!</b>\nتم إرسال <code>{completed}</code> من <code>{len(items)}</code> ملف بنجاح." if ulang == "ar" else f"✅ <b>Playlist download completed!</b>\nSent <code>{completed}</code> of <code>{len(items)}</code> files successfully.",
+        parse_mode="HTML"
+    )
+
+
 @router.message(F.text, ~F.text.startswith("/"))
 async def handle_video_link(message: Message):
+    user_id = message.from_user.id
     tg_lang = message.from_user.language_code
-    is_new, user_count, ulang = register_user(message.from_user.id, tg_lang)
+    is_new, user_count, ulang = register_user(user_id, tg_lang)
     if is_new:
         await update_bot_description(message.bot, user_count)
 
     t = TEXTS[ulang]
 
-    is_subbed, sub_kb, sub_msg = await check_force_sub(message.bot, message.from_user.id, ulang)
+    is_subbed, sub_kb, sub_msg = await check_force_sub(message.bot, user_id, ulang)
     if not is_subbed:
         await message.answer(sub_msg, reply_markup=sub_kb, parse_mode="HTML")
         return
 
     # Daily download limit check for free users
-    can_dl, rem = check_daily_limit(message.from_user.id, max_free=5)
+    can_dl, rem = check_daily_limit(user_id, max_free=5)
     if not can_dl:
         limit_text = (
             "⚠️ <b>عذراً، لقد استهلكت رصيدك المجاني اليومي (5 تنزيلات).</b>\n\n"
@@ -400,10 +526,113 @@ async def handle_video_link(message: Message):
         await message.answer(limit_text, reply_markup=get_vip_upgrade_keyboard(ulang), parse_mode="HTML")
         return
 
-    urls = URL_PATTERN.findall(message.text)
+    urls = URL_PATTERN.findall(message.text or "")
     if not urls:
-        await message.answer("⚠️ " + ("يرجى إرسال رابط فيديو صحيح." if ulang == "ar" else "Please send a valid video link."))
+        # Search query by name
+        if SEARCH_STATE.get(user_id) == "awaiting_search_query" or len((message.text or "").strip()) >= 2:
+            SEARCH_STATE.pop(user_id, None)
+            search_query = message.text.strip()
+            status_msg = await message.answer(
+                "🔍 <b>جاري البحث عن الفيديو/الأغنية...</b>" if ulang == "ar" else "🔍 <b>Searching for video/song...</b>",
+                parse_mode="HTML"
+            )
+
+            search_res = await search_video_by_query(search_query)
+            if not search_res or not search_res.get("url"):
+                await status_msg.edit_text(
+                    "❌ " + ("لم يتم العثور على نتائج للبحث." if ulang == "ar" else "No results found for search."),
+                    parse_mode="HTML"
+                )
+                return
+
+            url = search_res["url"]
+            url_id = str(uuid.uuid4())[:8]
+            URL_CACHE[url_id] = url
+
+            title = html.escape(search_res.get("title", search_query))
+            author = html.escape(search_res.get("author", ""))
+            thumb = search_res.get("thumbnail")
+
+            msg_text = (
+                f"🎬 <b>{title}</b>\n\n"
+                f"🌐 " + ("المنصة" if ulang == "ar" else "Platform") + f": <code>YouTube Search</code>\n"
+            )
+            if author:
+                msg_text += f"👤 " + ("المصدر" if ulang == "ar" else "Author") + f": <code>{author}</code>\n"
+
+            msg_text += t["select_option"]
+
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text=t["btn_video_720"], callback_data=f"dl:720:{url_id}"),
+                        InlineKeyboardButton(text=t["btn_video_480"], callback_data=f"dl:480:{url_id}"),
+                    ],
+                    [
+                        InlineKeyboardButton(text=t["btn_audio_mp3"], callback_data=f"dl:mp3:{url_id}"),
+                        InlineKeyboardButton(text=t["btn_gif"], callback_data=f"dl:gif:{url_id}"),
+                    ]
+                ]
+            )
+
+            if thumb and (thumb.startswith("http://") or thumb.startswith("https://")):
+                try:
+                    await status_msg.delete()
+                    await message.answer_photo(photo=thumb, caption=msg_text, reply_markup=keyboard, parse_mode="HTML")
+                    return
+                except Exception:
+                    pass
+
+            await status_msg.edit_text(msg_text, reply_markup=keyboard, parse_mode="HTML")
+            return
+
+        await message.answer("⚠️ " + ("يرجى إرسال رابط فيديو صحيح أو اسم أغنية للبحث." if ulang == "ar" else "Please send a valid video link or song name to search."))
         return
+
+    url = urls[0]
+    # Check if URL is Playlist
+    if "list=" in url.lower() or "playlist?list=" in url.lower():
+        status_msg = await message.answer(
+            "📁 <b>جاري فحص قائمة التشغيل...</b>" if ulang == "ar" else "📁 <b>Inspecting playlist...</b>",
+            parse_mode="HTML"
+        )
+        pl_info = await extract_playlist_info(url, max_items=10)
+        if pl_info and pl_info.get("items"):
+            pl_id = str(uuid.uuid4())[:8]
+            PLAYLIST_CACHE[pl_id] = pl_info
+
+            pl_title = html.escape(pl_info.get("title", "Playlist"))
+            item_count = pl_info.get("item_count", len(pl_info["items"]))
+
+            pl_text = (
+                f"📁 <b>قائمة تشغيل: {pl_title}</b>\n\n"
+                f"🎬 <b>عدد الفيديوهات المعالجة:</b> <code>{item_count}</code> فيديو\n\n"
+                f"👇 اختر طريقة التنزيل التجميعية للقائمة بالكامل:"
+            ) if ulang == "ar" else (
+                f"📁 <b>Playlist: {pl_title}</b>\n\n"
+                f"🎬 <b>Videos count:</b> <code>{item_count}</code>\n\n"
+                f"👇 Choose batch download mode for playlist:"
+            )
+
+            pl_kb = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="📥 تنزيل كافة الفيديوهات (MP4)" if ulang == "ar" else "📥 Download All Videos (MP4)",
+                            callback_data=f"dl_pl:mp4:{pl_id}"
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text="🎵 تنزيل كل الصوتيات (MP3)" if ulang == "ar" else "🎵 Download All Audios (MP3)",
+                            callback_data=f"dl_pl:mp3:{pl_id}"
+                        )
+                    ]
+                ]
+            )
+
+            await status_msg.edit_text(pl_text, reply_markup=pl_kb, parse_mode="HTML")
+            return
 
     url = urls[0]
     status_msg = await message.answer(t["inspecting"], parse_mode="HTML")

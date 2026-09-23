@@ -163,6 +163,115 @@ async def extract_info(url: str) -> dict | None:
         return None
 
 
+# ─── Search Video by Query (Chat Direct Search) ──────────
+async def search_video_by_query(query: str) -> dict | None:
+    query = query.strip()
+    if not query:
+        return None
+
+    ydl_opts = _base_ydl_opts({'skip_download': True})
+
+    def _search():
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+            if info and "entries" in info and len(info["entries"]) > 0:
+                entry = info["entries"][0]
+                video_url = entry.get("webpage_url") or entry.get("url") or f"https://www.youtube.com/watch?v={entry.get('id')}"
+                thumb = entry.get("thumbnail")
+                if not thumb and entry.get("thumbnails"):
+                    thumb = entry["thumbnails"][-1].get("url")
+                return {
+                    "title": entry.get("title", query)[:80],
+                    "author": (entry.get("uploader") or entry.get("channel") or "YouTube"),
+                    "duration": entry.get("duration", 0),
+                    "platform": "YouTube Search",
+                    "url": video_url,
+                    "thumbnail": thumb,
+                }
+            return None
+
+    try:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _search)
+    except Exception as e:
+        logger.error(f"search_video_by_query failed for {query}: {e}")
+        return None
+
+
+# ─── Search Videos Inline (Top 5 Results) ─────────────────
+async def search_videos_inline(query: str, max_results: int = 5) -> list[dict]:
+    query = query.strip()
+    if not query:
+        return []
+
+    ydl_opts = _base_ydl_opts({'skip_download': True})
+
+    def _search_multi():
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"ytsearch{max_results}:{query}", download=False)
+            results = []
+            if info and "entries" in info:
+                for entry in info["entries"][:max_results]:
+                    if not entry:
+                        continue
+                    video_url = entry.get("webpage_url") or entry.get("url") or f"https://www.youtube.com/watch?v={entry.get('id')}"
+                    thumb = entry.get("thumbnail")
+                    if not thumb and entry.get("thumbnails"):
+                        thumb = entry["thumbnails"][-1].get("url")
+                    results.append({
+                        "id": entry.get("id") or str(uuid.uuid4())[:8],
+                        "title": entry.get("title", "فيديو")[:80],
+                        "author": (entry.get("uploader") or entry.get("channel") or "YouTube"),
+                        "duration": entry.get("duration", 0),
+                        "url": video_url,
+                        "thumbnail": thumb,
+                    })
+            return results
+
+    try:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _search_multi)
+    except Exception as e:
+        logger.error(f"search_videos_inline failed for {query}: {e}")
+        return []
+
+
+# ─── Extract Playlist Info ─────────────────────────────────
+async def extract_playlist_info(url: str, max_items: int = 10) -> dict | None:
+    url = clean_url(url)
+    ydl_opts = _base_ydl_opts({'skip_download': True, 'extract_flat': 'in_playlist'})
+
+    def _playlist():
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if not info:
+                return None
+            entries = info.get("entries") or []
+            valid_items = []
+            for item in entries[:max_items]:
+                if not item:
+                    continue
+                v_url = item.get("url") or item.get("webpage_url") or f"https://www.youtube.com/watch?v={item.get('id')}"
+                valid_items.append({
+                    "title": item.get("title", "فيديو")[:80],
+                    "url": v_url,
+                    "duration": item.get("duration", 0),
+                })
+            return {
+                "title": info.get("title", "قائمة تشغيل")[:80],
+                "item_count": len(valid_items),
+                "items": valid_items,
+                "url": url,
+            }
+
+    try:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _playlist)
+    except Exception as e:
+        logger.error(f"extract_playlist_info failed for {url}: {e}")
+        return None
+
+
 # ─── TikTok Download ──────────────────────────────────────
 async def download_tiktok_watermark_free(url: str) -> dict | None:
     url = clean_url(url)
