@@ -43,7 +43,7 @@ def _base_ydl_opts(extra: dict = None) -> dict:
         'noplaylist': True,
         'user_agent': BROWSER_HEADERS['User-Agent'],
         'http_headers': BROWSER_HEADERS,
-        # إعادة المحاولة السرية
+        # إعادة المحاولة
         'retries': 3,
         'fragment_retries': 3,
         'socket_timeout': 15,
@@ -58,12 +58,7 @@ def _base_ydl_opts(extra: dict = None) -> dict:
         'default_search': 'auto',
         # SSL
         'nocheckcertificate': True,
-        'concurrent_fragment_downloads': 8,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'ios', 'mweb', 'web']
-            }
-        }
+        'concurrent_fragment_downloads': 4,
     }
 
     # Cookies لو موجودة
@@ -144,13 +139,8 @@ async def extract_info(url: str) -> dict | None:
 
     ydl_opts = _base_ydl_opts({
         'skip_download': True,
-        'socket_timeout': 10,
-        'retries': 2,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'ios', 'mweb']
-            }
-        }
+        'socket_timeout': 15,
+        'retries': 3,
     })
 
     def _get():
