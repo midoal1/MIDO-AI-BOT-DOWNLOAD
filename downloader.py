@@ -57,9 +57,9 @@ def _base_ydl_opts(extra: dict = None) -> dict:
         'user_agent': BROWSER_HEADERS['User-Agent'],
         'http_headers': BROWSER_HEADERS,
         # إعادة المحاولة
-        'retries': 3,
-        'fragment_retries': 3,
-        'socket_timeout': 15,
+        'retries': 5,
+        'fragment_retries': 5,
+        'socket_timeout': 30,
         # تجاوز القيود الجغرافية
         'geo_bypass': True,
         'geo_bypass_country': 'US',
@@ -72,6 +72,11 @@ def _base_ydl_opts(extra: dict = None) -> dict:
         # SSL
         'nocheckcertificate': True,
         'concurrent_fragment_downloads': 4,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'visionos']
+            }
+        }
     }
 
     # Cookies لو موجودة
