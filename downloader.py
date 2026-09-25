@@ -96,15 +96,16 @@ def _base_ydl_opts(extra: dict = None) -> dict:
 
 # ─── URL Cleaner ──────────────────────────────────────────
 def clean_url(url: str) -> str:
+    url = url.strip().rstrip(").,]>\"'")
     if "redirect_url=" in url:
         try:
             parsed = urllib.parse.urlparse(url)
             query = urllib.parse.parse_qs(parsed.query)
             if "redirect_url" in query and query["redirect_url"]:
-                return urllib.parse.unquote(query["redirect_url"][0])
+                return urllib.parse.unquote(query["redirect_url"][0]).strip().rstrip(").,]>\"'")
         except Exception:
             pass
-    return url.strip()
+    return url
 
 
 # ─── TikTok via TikWM ─────────────────────────────────────
