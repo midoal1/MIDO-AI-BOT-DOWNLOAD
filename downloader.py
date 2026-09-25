@@ -555,6 +555,14 @@ async def download_video_quality(url: str, quality: str) -> dict | None:
         res = await loop.run_in_executor(None, lambda: _extract(ydl_opts))
         if res and res.get("file_path") and os.path.exists(res["file_path"]):
             size_mb = os.path.getsize(res["file_path"]) / (1024 * 1024)
+            if size_mb > 49.5:
+                logger.info(f"File size {size_mb:.1f}MB > 49.5MB. Compressing for Telegram...")
+                comp_path = await compress_video_for_telegram(res["file_path"])
+                if comp_path and os.path.exists(comp_path):
+                    cleanup_file(res["file_path"])
+                    res["file_path"] = comp_path
+                    size_mb = os.path.getsize(comp_path) / (1024 * 1024)
+
             res["file_size_mb"] = size_mb
             res["requested_quality"] = quality
             return res
@@ -572,11 +580,87 @@ async def download_video_quality(url: str, quality: str) -> dict | None:
         res = await loop.run_in_executor(None, lambda: _extract(fallback_opts))
         if res and res.get("file_path") and os.path.exists(res["file_path"]):
             size_mb = os.path.getsize(res["file_path"]) / (1024 * 1024)
+            if size_mb > 49.5:
+                logger.info(f"Fallback file size {size_mb:.1f}MB > 49.5MB. Compressing for Telegram...")
+                comp_path = await compress_video_for_telegram(res["file_path"])
+                if comp_path and os.path.exists(comp_path):
+                    cleanup_file(res["file_path"])
+                    res["file_path"] = comp_path
+                    size_mb = os.path.getsize(comp_path) / (1024 * 1024)
+
             res["file_size_mb"] = size_mb
             res["requested_quality"] = quality
             return res
     except Exception as e:
         logger.error(f"Fallback video download error on {url}: {e}")
+
+    return None
+
+
+# ─── Video Compressor ─────────────────────────────────────
+async def compress_video_for_telegram(video_path: str, target_size_mb: float = 47.0) -> str | None:
+    """Compresses a large video file using FFmpeg to fit under target_size_mb (Telegram 50MB limit)."""
+    if not FFMPEG_PATH or not os.path.exists(FFMPEG_PATH):
+        return None
+
+    if not os.path.exists(video_path):
+        return None
+
+    file_size_mb = os.path.getsize(video_path) / (1024 * 1024)
+    if file_size_mb <= target_size_mb:
+        return video_path
+
+    probe_cmd = [FFMPEG_PATH, "-i", video_path]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *probe_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        _, stderr = await proc.communicate()
+        err_out = stderr.decode('utf-8', errors='ignore')
+
+        duration = None
+        match = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)", err_out)
+        if match:
+            hours, mins, secs = float(match.group(1)), float(match.group(2)), float(match.group(3))
+            duration = hours * 3600 + mins * 60 + secs
+
+        if not duration or duration <= 0:
+            duration = 300
+
+        target_total_bits = target_size_mb * 8 * 1024 * 1024
+        target_audio_bitrate_bps = 96 * 1024
+        target_video_bitrate_bps = max(int((target_total_bits / duration) - target_audio_bitrate_bps), 100 * 1024)
+        target_video_kbps = int(target_video_bitrate_bps / 1024)
+
+        compressed_path = os.path.join(DOWNLOAD_DIR, f"compressed_{uuid.uuid4().hex[:8]}.mp4")
+
+        cmd = [
+            FFMPEG_PATH, "-y",
+            "-i", video_path,
+            "-c:v", "libx264",
+            "-b:v", f"{target_video_kbps}k",
+            "-maxrate", f"{int(target_video_kbps * 1.2)}k",
+            "-bufsize", f"{int(target_video_kbps * 2)}k",
+            "-preset", "ultrafast",
+            "-vf", "scale='min(720,iw)':-2",
+            "-c:a", "aac",
+            "-b:a", "96k",
+            compressed_path
+        ]
+
+        proc_c = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        await proc_c.communicate()
+
+        if os.path.exists(compressed_path) and os.path.getsize(compressed_path) > 0:
+            return compressed_path
+    except Exception as e:
+        logger.error(f"Error compressing video with FFmpeg: {e}")
 
     return None
 
