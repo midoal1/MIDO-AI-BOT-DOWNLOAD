@@ -60,13 +60,12 @@ def _base_ydl_opts(extra: dict = None) -> dict:
         'retries': 5,
         'fragment_retries': 5,
         'socket_timeout': 30,
-        # تجاوز القيود الجغرافية
+        # تجاوز القيود الجغرافية وقيود العمر والمواقع البالغة
         'geo_bypass': True,
         'geo_bypass_country': 'US',
-        # تجاوز قيود العمر
-        'age_limit': 99,
-        # تجاهل الأخطاء غير الحرجة
-        'ignoreerrors': False,
+        'age_limit': 0,
+        'allow_unplayable_formats': True,
+        'ignoreerrors': True,
         # دعم المواقع الغير معروفة عن طريق Generic extractor
         'default_search': 'auto',
         # SSL
