@@ -43,10 +43,10 @@ def _base_ydl_opts(extra: dict = None) -> dict:
         'noplaylist': True,
         'user_agent': BROWSER_HEADERS['User-Agent'],
         'http_headers': BROWSER_HEADERS,
-        # إعادة المحاولة
-        'retries': 5,
-        'fragment_retries': 5,
-        'socket_timeout': 30,
+        # إعادة المحاولة السرية
+        'retries': 3,
+        'fragment_retries': 3,
+        'socket_timeout': 15,
         # تجاوز القيود الجغرافية
         'geo_bypass': True,
         'geo_bypass_country': 'US',
@@ -58,9 +58,10 @@ def _base_ydl_opts(extra: dict = None) -> dict:
         'default_search': 'auto',
         # SSL
         'nocheckcertificate': True,
+        'concurrent_fragment_downloads': 8,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'web']
+                'player_client': ['android', 'ios', 'mweb', 'web']
             }
         }
     }
@@ -77,7 +78,6 @@ def _base_ydl_opts(extra: dict = None) -> dict:
     if extra:
         opts.update(extra)
     return opts
-
 
 
 # ─── URL Cleaner ──────────────────────────────────────────
@@ -142,7 +142,16 @@ async def extract_info(url: str) -> dict | None:
         if res:
             return res
 
-    ydl_opts = _base_ydl_opts({'skip_download': True})
+    ydl_opts = _base_ydl_opts({
+        'skip_download': True,
+        'socket_timeout': 10,
+        'retries': 2,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios', 'mweb']
+            }
+        }
+    })
 
     def _get():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
