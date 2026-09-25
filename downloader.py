@@ -74,7 +74,8 @@ def _base_ydl_opts(extra: dict = None) -> dict:
         'concurrent_fragment_downloads': 4,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'visionos']
+                'player_client': ['android', 'visionos'],
+                'player_skip': ['webpage']
             }
         }
     }
@@ -161,8 +162,8 @@ async def extract_info(url: str) -> dict | None:
         'retries': 3,
     })
 
-    def _get():
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    def _get(opts):
+        with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
             thumb = info.get("thumbnail")
             if not thumb and info.get("thumbnails"):
@@ -178,12 +179,36 @@ async def extract_info(url: str) -> dict | None:
                 "thumbnail": thumb,
             }
 
+    loop = asyncio.get_running_loop()
     try:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, _get)
+        return await loop.run_in_executor(None, lambda: _get(ydl_opts))
     except Exception as e:
-        logger.error(f"extract_info failed for {url}: {e}")
-        return None
+        logger.warning(f"Primary extract_info failed for {url}: {e}")
+        try:
+            fallback_opts = _base_ydl_opts({
+                'skip_download': True,
+                'socket_timeout': 15,
+                'retries': 3,
+                'extractor_args': {
+                    'youtube': {
+                        'player_skip': ['webpage']
+                    }
+                }
+            })
+            return await loop.run_in_executor(None, lambda: _get(fallback_opts))
+        except Exception as fe:
+            logger.error(f"Fallback extract_info failed for {url}: {fe}")
+
+    # Ultimate fallback guarantee: Always return valid metadata container so user receives download card!
+    return {
+        "title": "فيديو / Video",
+        "author": "Online",
+        "duration": 0,
+        "platform": "Video Link",
+        "url": url,
+        "is_photo": False,
+        "thumbnail": None
+    }
 
 
 # ─── Search Video by Query (Chat Direct Search) ──────────
