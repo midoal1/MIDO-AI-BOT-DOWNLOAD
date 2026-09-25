@@ -1,8 +1,10 @@
 import os
+import sys
 import uuid
 import asyncio
 import logging
 import urllib.parse
+import shutil
 import aiohttp
 import yt_dlp
 
@@ -13,9 +15,20 @@ FFMPEG_PATH = None
 try:
     import imageio_ffmpeg
     FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
-    logger.info(f"FFmpeg detected at: {FFMPEG_PATH}")
+    if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
+        logger.info(f"FFmpeg detected via imageio_ffmpeg at: {FFMPEG_PATH}")
+    else:
+        FFMPEG_PATH = None
 except Exception as e:
-    logger.warning(f"imageio_ffmpeg not available: {e}")
+    logger.warning(f"imageio_ffmpeg check failed: {e}")
+
+if not FFMPEG_PATH:
+    sys_ffmpeg = shutil.which("ffmpeg")
+    if sys_ffmpeg:
+        FFMPEG_PATH = sys_ffmpeg
+        logger.info(f"FFmpeg detected in system PATH at: {FFMPEG_PATH}")
+    else:
+        logger.warning("FFmpeg executable not found! Single-format pre-merged fallback will be prioritized.")
 
 # ─── Paths ────────────────────────────────────────────────
 DOWNLOAD_DIR = os.path.join(os.path.dirname(__file__), "downloads")
@@ -452,19 +465,25 @@ async def download_video_quality(url: str, quality: str) -> dict | None:
             'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]'
             '/bestvideo[height<=720]+bestaudio'
             '/best[height<=720]'
+            '/b[height<=720]'
             '/best'
+            '/b'
         ),
         "480": (
             'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]'
             '/bestvideo[height<=480]+bestaudio'
             '/best[height<=480]'
+            '/b[height<=480]'
             '/best'
+            '/b'
         ),
         "360": (
             'bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]'
             '/bestvideo[height<=360]+bestaudio'
             '/best[height<=360]'
+            '/b[height<=360]'
             '/best'
+            '/b'
         ),
     }
     fmt_spec = quality_formats.get(quality, quality_formats["720"])
@@ -511,10 +530,10 @@ async def download_video_quality(url: str, quality: str) -> dict | None:
     except Exception as e:
         logger.warning(f"Primary video format download failed for {quality}p on {url}: {e}")
 
-    # Attempt 2: General fallback format spec ('best/bestvideo+bestaudio')
+    # Attempt 2: General fallback format spec ('b/best/bestvideo+bestaudio')
     try:
         fallback_opts = _base_ydl_opts({
-            'format': 'best/bestvideo+bestaudio',
+            'format': 'b/best/bestvideo+bestaudio',
             'outtmpl': output_template,
             'concurrent_fragment_downloads': 4,
             'merge_output_format': 'mp4',
