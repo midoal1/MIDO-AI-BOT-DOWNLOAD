@@ -65,7 +65,7 @@ def _base_ydl_opts(extra: dict = None) -> dict:
         'geo_bypass_country': 'US',
         'age_limit': 0,
         'allow_unplayable_formats': True,
-        'ignoreerrors': True,
+        'ignoreerrors': False,
         # دعم المواقع الغير معروفة عن طريق Generic extractor
         'default_search': 'auto',
         # SSL

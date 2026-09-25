@@ -645,6 +645,9 @@ async def handle_video_link(message: Message):
     if is_fast_mode(message.from_user.id):
         await status_msg.edit_text(t["downloading_video"].format(quality="720"), parse_mode="HTML")
         download_data = await download_video_quality(url, "720")
+        if not download_data:
+            download_data = await download_video_quality(url, "480")
+
         if download_data and download_data.get("file_path"):
             file_path = download_data["file_path"]
             file_size_mb = download_data.get("file_size_mb") or (os.path.getsize(file_path) / (1024 * 1024))
