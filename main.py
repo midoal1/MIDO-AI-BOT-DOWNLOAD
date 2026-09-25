@@ -45,6 +45,24 @@ async def start_dummy_web_server():
         except Exception as e:
             logging.warning(f"Could not start dummy web server: {e}")
 
+async def keep_alive_ping():
+    """Self pings the server every 4 minutes to keep Render Web Service active and prevent sleep mode."""
+    port_str = os.getenv("PORT")
+    render_url = os.getenv("RENDER_EXTERNAL_URL")
+    if not port_str and not render_url:
+        return
+        
+    await asyncio.sleep(10)
+    while True:
+        try:
+            target_url = render_url if render_url else f"http://127.0.0.1:{port_str}/health"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(target_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    logging.info(f"Keep-alive self ping to {target_url}: status {resp.status}")
+        except Exception as e:
+            logging.debug(f"Keep-alive ping error: {e}")
+        await asyncio.sleep(240)  # Ping every 4 minutes
+
 async def setup_bot_profile(bot: Bot):
     try:
         commands = [
@@ -98,14 +116,20 @@ async def main():
     dp.include_router(router)
     
     await start_dummy_web_server()
+    asyncio.create_task(keep_alive_ping())
     await setup_bot_profile(bot)
 
     print("🚀 جاري تشغيل بوت تنزيل الفيديوهات والصوتيات مع نظام الاشتراكات والـ VIP...")
     print("اضغط Ctrl+C لإيقاف البوت في أي وقت.\n")
     
-    # Delete webhook and drop old updates
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    while True:
+        try:
+            await bot.delete_webhook(drop_pending_updates=True)
+            logging.info("Starting Telegram Bot long-polling...")
+            await dp.start_polling(bot)
+        except Exception as e:
+            logging.error(f"Polling connection lost ({e}). Reconnecting in 5 seconds...")
+            await asyncio.sleep(5)
 
 if __name__ == "__main__":
     try:

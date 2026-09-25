@@ -88,8 +88,11 @@ def set_user_lang(user_id: int, lang: str) -> str:
 
 
 def is_vip(user_id: int) -> tuple[bool, str]:
-    """Check if user has an active VIP subscription. Returns (is_vip, expire_date_str)."""
+    """Check if user has an active VIP subscription or is Admin. Returns (is_vip, expire_date_str)."""
     db = load_db()
+    admin_ids = db.get("admin_ids", [])
+    if user_id in admin_ids:
+        return True, "الآدمن 👑"
     vip_until = db.get("vip_until", {})
     str_uid = str(user_id)
     
