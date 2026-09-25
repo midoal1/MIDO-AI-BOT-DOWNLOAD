@@ -45,6 +45,7 @@ BROWSER_HEADERS = {
     'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Referer': 'https://www.google.com/',
+    'Cookie': 'age_verified=1; over18=1; adult_verified=1; pda_accepted=1; is_adult=1',
 }
 
 
@@ -63,7 +64,6 @@ def _base_ydl_opts(extra: dict = None) -> dict:
         # تجاوز القيود الجغرافية وقيود العمر والمواقع البالغة
         'geo_bypass': True,
         'geo_bypass_country': 'US',
-        'age_limit': 0,
         'allow_unplayable_formats': True,
         'ignoreerrors': False,
         # دعم المواقع الغير معروفة عن طريق Generic extractor
