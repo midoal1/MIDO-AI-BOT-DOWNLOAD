@@ -579,11 +579,14 @@ async def handle_video_link(message: Message):
 
             if thumb and (thumb.startswith("http://") or thumb.startswith("https://")):
                 try:
-                    await status_msg.delete()
                     await message.answer_photo(photo=thumb, caption=msg_text, reply_markup=keyboard, parse_mode="HTML")
+                    try:
+                        await status_msg.delete()
+                    except Exception:
+                        pass
                     return
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Could not send search photo thumbnail: {e}")
 
             await status_msg.edit_text(msg_text, reply_markup=keyboard, parse_mode="HTML")
             return
@@ -710,13 +713,16 @@ async def handle_video_link(message: Message):
 
     if thumb and (thumb.startswith("http://") or thumb.startswith("https://")):
         try:
-            await status_msg.delete()
             await message.answer_photo(
                 photo=thumb,
                 caption=msg_text,
                 reply_markup=keyboard,
                 parse_mode="HTML"
             )
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
             return
         except Exception as e:
             logger.warning(f"Could not send thumbnail photo: {e}")
