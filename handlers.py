@@ -672,9 +672,15 @@ async def handle_video_link(message: Message):
                 return
 
             record_download(message.from_user.id)
-            title = html.escape(download_data.get("title", ""))
-            caption = f"🎬 <b>{title[:80]}</b>\n🤖 @MIDOALIAIBOT"
-            await message.answer_video(video=FSInputFile(file_path), caption=caption, parse_mode="HTML")
+            raw_title = (download_data.get("title") or "")[:70]
+            title = html.escape(raw_title)
+            caption = f"🎬 <b>{title}</b>\n🤖 @MIDOALIAIBOT"
+            plain_caption = f"🎬 {raw_title}\n🤖 @MIDOALIAIBOT"
+            try:
+                await message.answer_video(video=FSInputFile(file_path), caption=caption, parse_mode="HTML")
+            except Exception as e_send:
+                logger.warning(f"Could not send video with HTML parse_mode: {e_send}")
+                await message.answer_video(video=FSInputFile(file_path), caption=plain_caption)
             cleanup_file(file_path)
             await status_msg.delete()
             return
@@ -785,15 +791,25 @@ async def handle_download_option(callback: CallbackQuery):
 
         record_download(callback.from_user.id)
 
-        title = html.escape(download_data.get("title", ""))
-        author = html.escape(download_data.get("author", ""))
-        platform = html.escape(download_data.get("platform", ""))
+        raw_title = (download_data.get("title") or "")[:70]
+        raw_author = (download_data.get("author") or "")[:30]
+        raw_platform = (download_data.get("platform") or "")[:30]
 
-        caption = f"🎬 <b>{title[:80]}</b>\n"
+        title = html.escape(raw_title)
+        author = html.escape(raw_author)
+        platform = html.escape(raw_platform)
+
+        caption = f"🎬 <b>{title}</b>\n"
         if author:
             caption += f"👤 " + ("المصدر" if ulang == "ar" else "Source") + f": {author}\n"
         caption += f"🌐 " + ("النوع" if ulang == "ar" else "Type") + f": {platform}\n\n"
         caption += "🤖 @MIDOALIAIBOT"
+
+        plain_caption = f"🎬 {raw_title}\n"
+        if raw_author:
+            plain_caption += f"👤 " + ("المصدر" if ulang == "ar" else "Source") + f": {raw_author}\n"
+        plain_caption += f"🌐 " + ("النوع" if ulang == "ar" else "Type") + f": {raw_platform}\n\n"
+        plain_caption += "🤖 @MIDOALIAIBOT"
 
         if download_data.get("type") == "photos":
             await safe_edit_status(callback.message, t["uploading_photos"])
@@ -806,14 +822,25 @@ async def handle_download_option(callback: CallbackQuery):
                     media_group.append(InputMediaPhoto(media=FSInputFile(img_p)))
 
             if media_group:
-                await callback.message.answer_media_group(media=media_group)
+                try:
+                    await callback.message.answer_media_group(media=media_group)
+                except Exception as mg_err:
+                    logger.warning(f"Failed to send media group with HTML: {mg_err}")
+                    media_group[0] = InputMediaPhoto(media=FSInputFile(image_paths[0]), caption=plain_caption)
+                    await callback.message.answer_media_group(media=media_group)
 
             if download_data.get("music_path"):
-                await callback.message.answer_audio(
-                    audio=FSInputFile(download_data["music_path"]),
-                    caption="🎵 <b>@MIDOALIAIBOT</b>",
-                    parse_mode="HTML"
-                )
+                try:
+                    await callback.message.answer_audio(
+                        audio=FSInputFile(download_data["music_path"]),
+                        caption="🎵 <b>@MIDOALIAIBOT</b>",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    await callback.message.answer_audio(
+                        audio=FSInputFile(download_data["music_path"]),
+                        caption="🎵 @MIDOALIAIBOT"
+                    )
 
         else:
             file_path = download_data.get("file_path")
@@ -872,25 +899,48 @@ async def handle_download_option(callback: CallbackQuery):
             input_file = FSInputFile(file_path)
 
             if download_data.get("type") == "gif":
-                await callback.message.answer_animation(
-                    animation=input_file,
-                    caption=caption,
-                    parse_mode="HTML"
-                )
+                try:
+                    await callback.message.answer_animation(
+                        animation=input_file,
+                        caption=caption,
+                        parse_mode="HTML"
+                    )
+                except Exception as send_err:
+                    logger.warning(f"Error sending animation with HTML, retrying plain text: {send_err}")
+                    await callback.message.answer_animation(
+                        animation=input_file,
+                        caption=plain_caption
+                    )
             elif mode == "mp3" or download_data.get("type") == "audio":
-                await callback.message.answer_audio(
-                    audio=input_file,
-                    caption=caption,
-                    title=download_data.get("title", "")[:60],
-                    performer=download_data.get("author", "")[:30] if download_data.get("author") else "MIDO AI",
-                    parse_mode="HTML"
-                )
+                try:
+                    await callback.message.answer_audio(
+                        audio=input_file,
+                        caption=caption,
+                        title=raw_title[:60],
+                        performer=raw_author if raw_author else "MIDO AI",
+                        parse_mode="HTML"
+                    )
+                except Exception as send_err:
+                    logger.warning(f"Error sending audio with HTML, retrying plain text: {send_err}")
+                    await callback.message.answer_audio(
+                        audio=input_file,
+                        caption=plain_caption,
+                        title=raw_title[:60],
+                        performer=raw_author if raw_author else "MIDO AI"
+                    )
             else:
-                await callback.message.answer_video(
-                    video=input_file,
-                    caption=caption,
-                    parse_mode="HTML"
-                )
+                try:
+                    await callback.message.answer_video(
+                        video=input_file,
+                        caption=caption,
+                        parse_mode="HTML"
+                    )
+                except Exception as send_err:
+                    logger.warning(f"Error sending video with HTML, retrying plain text: {send_err}")
+                    await callback.message.answer_video(
+                        video=input_file,
+                        caption=plain_caption
+                    )
 
         await callback.message.delete()
 

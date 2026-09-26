@@ -31,11 +31,22 @@ if not FFMPEG_PATH:
         logger.warning("FFmpeg executable not found! Single-format pre-merged fallback will be prioritized.")
 
 # ─── Paths ────────────────────────────────────────────────
+# ─── Paths & Cookies ──────────────────────────────────────
 DOWNLOAD_DIR = os.path.join(os.path.dirname(__file__), "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 COOKIES_FILE = os.path.join(os.path.dirname(__file__), "cookies.txt")
 
-# ─── Shared Headers ───────────────────────────────────────
+# Load cookies from YOUTUBE_COOKIES env var if present (for Render cloud servers)
+cookies_env = os.getenv("YOUTUBE_COOKIES")
+if cookies_env and not os.path.exists(COOKIES_FILE):
+    try:
+        with open(COOKIES_FILE, "w", encoding="utf-8") as cf:
+            cf.write(cookies_env.strip())
+        logger.info("Created cookies.txt from YOUTUBE_COOKIES environment variable.")
+    except Exception as ce:
+        logger.warning(f"Could not write YOUTUBE_COOKIES to cookies.txt: {ce}")
+
+# ─── Shared Headers for Web requests (TikWM, etc.) ────────
 BROWSER_HEADERS = {
     'User-Agent': (
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
@@ -45,7 +56,6 @@ BROWSER_HEADERS = {
     'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Referer': 'https://www.google.com/',
-    'Cookie': 'age_verified=1; over18=1; adult_verified=1; pda_accepted=1; is_adult=1',
 }
 
 
@@ -55,16 +65,13 @@ def _base_ydl_opts(extra: dict = None) -> dict:
         'quiet': True,
         'no_warnings': True,
         'noplaylist': True,
-        'user_agent': BROWSER_HEADERS['User-Agent'],
-        'http_headers': BROWSER_HEADERS,
         # إعادة المحاولة
         'retries': 5,
         'fragment_retries': 5,
         'socket_timeout': 30,
-        # تجاوز القيود الجغرافية وقيود العمر والمواقع البالغة
+        # تجاوز القيود الجغرافية
         'geo_bypass': True,
         'geo_bypass_country': 'US',
-        'allow_unplayable_formats': True,
         'ignoreerrors': False,
         # دعم المواقع الغير معروفة عن طريق Generic extractor
         'default_search': 'auto',
@@ -73,8 +80,7 @@ def _base_ydl_opts(extra: dict = None) -> dict:
         'concurrent_fragment_downloads': 4,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'visionos'],
-                'player_skip': ['webpage']
+                'player_client': ['android', 'ios'],
             }
         }
     }
