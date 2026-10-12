@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import uuid
 import asyncio
@@ -30,21 +31,69 @@ if not FFMPEG_PATH:
     else:
         logger.warning("FFmpeg executable not found! Single-format pre-merged fallback will be prioritized.")
 
-# ─── Paths ────────────────────────────────────────────────
+# ─── JavaScript runtime (required by yt-dlp for YouTube) ──
+DENO_PATH = shutil.which("deno")
+if not DENO_PATH:
+    try:
+        import deno as _deno_pkg
+        DENO_PATH = _deno_pkg.find_deno_bin()
+    except Exception as e:
+        logger.warning(f"Deno (pip package) not available: {e}")
+if DENO_PATH and os.path.exists(DENO_PATH):
+    logger.info(f"Deno JS runtime detected at: {DENO_PATH}")
+else:
+    DENO_PATH = None
+    logger.warning("No Deno JS runtime found! YouTube downloads may fail.")
+
 # ─── Paths & Cookies ──────────────────────────────────────
 DOWNLOAD_DIR = os.path.join(os.path.dirname(__file__), "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 COOKIES_FILE = os.path.join(os.path.dirname(__file__), "cookies.txt")
 
-# Load cookies from YOUTUBE_COOKIES env var if present (for Render cloud servers)
-cookies_env = os.getenv("YOUTUBE_COOKIES")
-if cookies_env and not os.path.exists(COOKIES_FILE):
+# Load cookies (Netscape format) from env vars if present (for Render cloud servers).
+# COOKIES can contain cookies for several sites (YouTube + Instagram + Facebook ...).
+_cookie_parts = [os.getenv(k, "").strip() for k in ("COOKIES", "YOUTUBE_COOKIES", "INSTAGRAM_COOKIES")]
+_cookie_parts = [p for p in _cookie_parts if p]
+if _cookie_parts:
     try:
         with open(COOKIES_FILE, "w", encoding="utf-8") as cf:
-            cf.write(cookies_env.strip())
-        logger.info("Created cookies.txt from YOUTUBE_COOKIES environment variable.")
+            cf.write("# Netscape HTTP Cookie File\n")
+            for part in _cookie_parts:
+                for line in part.replace("\\n", "\n").splitlines():
+                    if line.strip() and not line.startswith("# Netscape"):
+                        cf.write(line.rstrip() + "\n")
+        logger.info("Created cookies.txt from environment variables.")
     except Exception as ce:
-        logger.warning(f"Could not write YOUTUBE_COOKIES to cookies.txt: {ce}")
+        logger.warning(f"Could not write cookies to cookies.txt: {ce}")
+
+# ─── Last error per URL (to show the real reason to the user) ─
+LAST_ERRORS: dict[str, str] = {}
+
+
+def _set_error(url: str, err) -> None:
+    msg = re.sub(r"\x1b\[[0-9;]*m", "", str(err)).replace("ERROR: ", "").strip()
+    LAST_ERRORS[clean_url(url)] = msg[:300]
+
+
+def get_last_error(url: str) -> str:
+    """Returns a short, user-friendly explanation of the last failure for url."""
+    raw = LAST_ERRORS.get(clean_url(url), "")
+    low = raw.lower()
+    if not raw:
+        return ""
+    if "sign in to confirm" in low or "not a bot" in low:
+        return "YouTube blocked the server IP (bot check). Add YouTube cookies (COOKIES env var)."
+    if "login required" in low or "rate-limit" in low or ("login" in low and "instagram" in low):
+        return "Instagram requires login from the server. Add Instagram cookies (COOKIES env var)."
+    if "private" in low:
+        return "This video is private."
+    if "unavailable" in low:
+        return "This video is unavailable or removed."
+    if "unsupported url" in low:
+        return "Unsupported URL."
+    if "age" in low and ("restricted" in low or "confirm your age" in low):
+        return "Age-restricted video: needs cookies of a logged-in account (COOKIES env var)."
+    return raw[:200]
 
 # ─── Shared Headers for Web requests (TikWM, etc.) ────────
 BROWSER_HEADERS = {
@@ -78,17 +127,15 @@ def _base_ydl_opts(extra: dict = None) -> dict:
         # SSL
         'nocheckcertificate': True,
         'concurrent_fragment_downloads': 4,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'ios'],
-            }
-        }
     }
+
+    # JavaScript runtime for YouTube signature/n-challenge solving
+    if DENO_PATH:
+        opts['js_runtimes'] = {'deno': {'path': DENO_PATH}}
 
     # Cookies لو موجودة
     if os.path.exists(COOKIES_FILE):
         opts['cookiefile'] = COOKIES_FILE
-        logger.info("Using cookies.txt")
 
     # FFmpeg
     if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
@@ -99,17 +146,69 @@ def _base_ydl_opts(extra: dict = None) -> dict:
     return opts
 
 
-# ─── URL Cleaner ──────────────────────────────────────────
+# ─── URL Cleaner & Share Link Resolver ───────────────────
 def clean_url(url: str) -> str:
     url = url.strip().rstrip(").,]>\"'")
-    if "redirect_url=" in url:
-        try:
-            parsed = urllib.parse.urlparse(url)
-            query = urllib.parse.parse_qs(parsed.query)
-            if "redirect_url" in query and query["redirect_url"]:
-                return urllib.parse.unquote(query["redirect_url"][0]).strip().rstrip(").,]>\"'")
-        except Exception:
-            pass
+    try:
+        parsed = urllib.parse.urlparse(url)
+        query = urllib.parse.parse_qs(parsed.query)
+        for key in ("redirect_url", "next", "u"):
+            if key in query and query[key]:
+                inner = urllib.parse.unquote(query[key][0]).strip().rstrip(").,]>\"'")
+                if inner.startswith("http"):
+                    url = inner
+                    parsed = urllib.parse.urlparse(url)
+                    break
+        # Strip tracking query params from Instagram post/reel links
+        if "instagram.com" in parsed.netloc.lower() and any(
+            seg in parsed.path for seg in ("/reel/", "/reels/", "/p/", "/tv/")
+        ):
+            clean_path = parsed.path.replace("/reels/", "/reel/")
+            url = urllib.parse.urlunparse((parsed.scheme or "https", parsed.netloc, clean_path, "", "", ""))
+    except Exception:
+        pass
+    return url
+
+
+async def resolve_url(url: str) -> str:
+    """Unwraps mobile share links (facebook.com/share/..., fb.watch/..., instagram.com/share/...)."""
+    url = clean_url(url)
+    low = url.lower()
+    needs_resolve = (
+        "/share/" in low
+        or "fb.watch" in low
+        or "fb.gg" in low
+        or "vt.tiktok.com" in low
+        or "vm.tiktok.com" in low
+    )
+    if not needs_resolve:
+        return url
+
+    headers = dict(BROWSER_HEADERS)
+    if "facebook.com" in low or "fb.watch" in low or "instagram.com" in low:
+        headers["User-Agent"] = "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            cur = url
+            for _ in range(6):
+                async with session.get(
+                    cur, headers=headers, allow_redirects=False,
+                    timeout=aiohttp.ClientTimeout(total=6)
+                ) as resp:
+                    loc = resp.headers.get("Location")
+                    if not loc:
+                        break
+                    loc = urllib.parse.urljoin(cur, loc)
+                    cleaned = clean_url(loc)
+                    if cleaned != loc and ("/reel/" in cleaned or "/watch" in cleaned or "/videos/" in cleaned or "/p/" in cleaned):
+                        return cleaned
+                    if "/login" in loc.lower():
+                        break
+                    cur = cleaned
+            return clean_url(cur)
+    except Exception as e:
+        logger.debug(f"resolve_url skipped for {url}: {e}")
     return url
 
 
@@ -154,7 +253,7 @@ async def _tikwm_info(url: str) -> dict | None:
 
 # ─── extract_info ─────────────────────────────────────────
 async def extract_info(url: str) -> dict | None:
-    url = clean_url(url)
+    url = await resolve_url(url)
 
     # TikTok fast path
     if "tiktok.com" in url.lower() or "douyin.com" in url.lower():
@@ -190,6 +289,7 @@ async def extract_info(url: str) -> dict | None:
         return await loop.run_in_executor(None, lambda: _get(ydl_opts))
     except Exception as e:
         logger.warning(f"Primary extract_info failed for {url}: {e}")
+        _set_error(url, e)
         try:
             fallback_opts = _base_ydl_opts({
                 'skip_download': True,
@@ -197,13 +297,14 @@ async def extract_info(url: str) -> dict | None:
                 'retries': 3,
                 'extractor_args': {
                     'youtube': {
-                        'player_skip': ['webpage']
+                        'player_client': ['tv', 'web_safari', 'mweb']
                     }
                 }
             })
             return await loop.run_in_executor(None, lambda: _get(fallback_opts))
         except Exception as fe:
             logger.error(f"Fallback extract_info failed for {url}: {fe}")
+            _set_error(url, fe)
 
     # Ultimate fallback guarantee: Always return valid metadata container so user receives download card!
     return {
@@ -417,9 +518,51 @@ async def download_tiktok_watermark_free(url: str) -> dict | None:
     return None
 
 
+# ─── Instagram Embed Fallback ─────────────────────────────
+async def _instagram_embed_download(url: str) -> dict | None:
+    """Fallback scraper for Instagram /p/ or /reel/ via the public /embed/captioned/ endpoint."""
+    m = re.search(r"instagram\.com/(?:reel|reels|p|tv)/([A-Za-z0-9_-]+)", url)
+    if not m:
+        return None
+    shortcode = m.group(1)
+    embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(embed_url, headers=BROWSER_HEADERS,
+                                   timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status != 200:
+                    return None
+                raw_html = await resp.text()
+            unescaped = raw_html.replace("\\/", "/").replace('\\"', '"').replace("\\u0026", "&")
+            vid_match = re.search(r'"video_url"\s*:\s*"(https?://[^"]+)"', unescaped)
+            if not vid_match:
+                return None
+            video_url = vid_match.group(1)
+            fid = str(uuid.uuid4())[:8]
+            fp = os.path.join(DOWNLOAD_DIR, f"insta_{fid}.mp4")
+            async with session.get(video_url, headers=BROWSER_HEADERS,
+                                   timeout=aiohttp.ClientTimeout(total=60)) as vr:
+                if vr.status == 200:
+                    with open(fp, "wb") as f:
+                        async for chunk in vr.content.iter_chunked(1024 * 1024):
+                            f.write(chunk)
+                    size_mb = os.path.getsize(fp) / (1024 * 1024)
+                    return {
+                        "type": "video",
+                        "file_path": fp,
+                        "title": "Instagram Reel",
+                        "author": "Instagram",
+                        "platform": "Instagram",
+                        "file_size_mb": size_mb,
+                    }
+    except Exception as e:
+        logger.warning(f"Instagram embed fallback failed for {url}: {e}")
+    return None
+
+
 # ─── Audio Download ───────────────────────────────────────
 async def download_audio(url: str) -> dict | None:
-    url = clean_url(url)
+    url = await resolve_url(url)
 
     if "tiktok.com" in url.lower() or "douyin.com" in url.lower():
         res = await download_tiktok_watermark_free(url)
@@ -432,7 +575,7 @@ async def download_audio(url: str) -> dict | None:
     output_template = os.path.join(DOWNLOAD_DIR, f"audio_{fid}.%(ext)s")
 
     extra = {
-        'format': 'bestaudio[ext=m4a]/bestaudio/best',
+        'format': 'bestaudio[ext=m4a]/bestaudio[protocol^=m3u8]/bestaudio/best',
         'outtmpl': output_template,
         'concurrent_fragment_downloads': 4,
     }
@@ -464,11 +607,17 @@ async def download_audio(url: str) -> dict | None:
         return await loop.run_in_executor(None, lambda: _extract(ydl_opts))
     except Exception as e:
         logger.warning(f"Primary audio download error on {url}: {e}")
+        _set_error(url, e)
         try:
             fallback_opts = _base_ydl_opts({
-                'format': 'best',
+                'format': 'bestaudio/best',
                 'outtmpl': output_template,
                 'concurrent_fragment_downloads': 4,
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['mweb', 'android_vr', 'tv_simply']
+                    }
+                }
             })
             if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
                 fallback_opts['postprocessors'] = [{
@@ -479,12 +628,13 @@ async def download_audio(url: str) -> dict | None:
             return await loop.run_in_executor(None, lambda: _extract(fallback_opts))
         except Exception as fe:
             logger.error(f"Fallback audio download error on {url}: {fe}")
+            _set_error(url, fe)
     return None
 
 
 # ─── Video Download (with quality fallback chain) ─────────
 async def download_video_quality(url: str, quality: str) -> dict | None:
-    url = clean_url(url)
+    url = await resolve_url(url)
 
     # TikTok fast path
     if "tiktok.com" in url.lower() or "douyin.com" in url.lower():
@@ -495,10 +645,12 @@ async def download_video_quality(url: str, quality: str) -> dict | None:
     fid = str(uuid.uuid4())
     output_template = os.path.join(DOWNLOAD_DIR, f"video_{fid}.%(ext)s")
 
-    # سلسلة جودة مرنة — تنزل أحسن جودة متاحة حسب الاختيار
+    # سلسلة جودة مرنة — تفضل H.264 (vcodec^=avc) لتجنب 403 الخاصة بـ AV1 على يوتيوب ولدعم التشغيل المباشر في تليجرام
     quality_formats = {
         "720": (
-            'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]'
+            'bestvideo[height<=720][vcodec^=avc]+bestaudio[ext=m4a]'
+            '/best[height<=720][ext=mp4]'
+            '/bestvideo[height<=720][protocol^=m3u8]+bestaudio[protocol^=m3u8]'
             '/bestvideo[height<=720]+bestaudio'
             '/best[height<=720]'
             '/b[height<=720]'
@@ -506,7 +658,9 @@ async def download_video_quality(url: str, quality: str) -> dict | None:
             '/b'
         ),
         "480": (
-            'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]'
+            'bestvideo[height<=480][vcodec^=avc]+bestaudio[ext=m4a]'
+            '/best[height<=480][ext=mp4]'
+            '/bestvideo[height<=480][protocol^=m3u8]+bestaudio[protocol^=m3u8]'
             '/bestvideo[height<=480]+bestaudio'
             '/best[height<=480]'
             '/b[height<=480]'
@@ -514,7 +668,9 @@ async def download_video_quality(url: str, quality: str) -> dict | None:
             '/b'
         ),
         "360": (
-            'bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]'
+            'best[height<=360][ext=mp4]'
+            '/bestvideo[height<=360][vcodec^=avc]+bestaudio[ext=m4a]'
+            '/bestvideo[height<=360][protocol^=m3u8]+bestaudio[protocol^=m3u8]'
             '/bestvideo[height<=360]+bestaudio'
             '/best[height<=360]'
             '/b[height<=360]'
@@ -523,6 +679,7 @@ async def download_video_quality(url: str, quality: str) -> dict | None:
         ),
     }
     fmt_spec = quality_formats.get(quality, quality_formats["720"])
+    max_h = quality if quality in ("720", "480", "360") else "720"
 
     extra = {
         'format': fmt_spec,
@@ -573,14 +730,25 @@ async def download_video_quality(url: str, quality: str) -> dict | None:
             return res
     except Exception as e:
         logger.warning(f"Primary video format download failed for {quality}p on {url}: {e}")
+        _set_error(url, e)
 
-    # Attempt 2: General fallback format spec ('b/best/bestvideo+bestaudio')
+    # Attempt 2: Height-capped fallback with HLS / alternate clients
     try:
         fallback_opts = _base_ydl_opts({
-            'format': 'b/best/bestvideo+bestaudio',
+            'format': (
+                f'best[height<={max_h}]'
+                f'/bestvideo[height<={max_h}][protocol^=m3u8]+bestaudio[protocol^=m3u8]'
+                f'/bestvideo[height<={max_h}]+bestaudio'
+                f'/b[height<={max_h}]/b/best'
+            ),
             'outtmpl': output_template,
             'concurrent_fragment_downloads': 4,
             'merge_output_format': 'mp4',
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['mweb', 'android_vr', 'tv_simply']
+                }
+            }
         })
         res = await loop.run_in_executor(None, lambda: _extract(fallback_opts))
         if res and res.get("file_path") and os.path.exists(res["file_path"]):
@@ -598,6 +766,14 @@ async def download_video_quality(url: str, quality: str) -> dict | None:
             return res
     except Exception as e:
         logger.error(f"Fallback video download error on {url}: {e}")
+        _set_error(url, e)
+
+    # Attempt 3: Instagram embed fallback if applicable
+    if "instagram.com" in url.lower():
+        res = await _instagram_embed_download(url)
+        if res:
+            res["requested_quality"] = quality
+            return res
 
     return None
 

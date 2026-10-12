@@ -13,7 +13,7 @@ from aiogram.types import (
 from downloader import (
     extract_info, download_video_quality, download_audio,
     convert_video_to_gif, cleanup_file, search_video_by_query,
-    search_videos_inline, extract_playlist_info
+    search_videos_inline, extract_playlist_info, get_last_error
 )
 from database import (
     register_user, get_user_lang, set_user_lang,
@@ -23,6 +23,14 @@ from database import (
 from subscriptions import get_vip_upgrade_keyboard
 
 logger = logging.getLogger(__name__)
+
+
+def error_text_for(t: dict, url: str) -> str:
+    """Generic error message + the real failure reason (if known)."""
+    reason = get_last_error(url) if url else ""
+    if reason:
+        return t["error_download"] + f"\n\n🔎 <code>{html.escape(reason)}</code>"
+    return t["error_download"]
 router = Router()
 
 URL_PATTERN = re.compile(r'https?://[^\s]+')
@@ -786,7 +794,7 @@ async def handle_download_option(callback: CallbackQuery):
             download_data = await download_video_quality(url, mode)
 
         if not download_data:
-            await safe_edit_status(callback.message, t["error_download"])
+            await safe_edit_status(callback.message, error_text_for(t, url))
             return
 
         record_download(callback.from_user.id)
@@ -845,7 +853,7 @@ async def handle_download_option(callback: CallbackQuery):
         else:
             file_path = download_data.get("file_path")
             if not file_path or not os.path.exists(file_path):
-                await safe_edit_status(callback.message, t["error_download"])
+                await safe_edit_status(callback.message, error_text_for(t, url))
                 return
 
             file_size_mb = download_data.get("file_size_mb") or (os.path.getsize(file_path) / (1024 * 1024))
@@ -946,7 +954,10 @@ async def handle_download_option(callback: CallbackQuery):
 
     except Exception as e:
         logger.error(f"Error handling download callback: {e}", exc_info=True)
-        await safe_edit_status(callback.message, t["error_download"])
+        err_msg = error_text_for(t, url)
+        if err_msg == t["error_download"]:
+            err_msg += f"\n\n🔎 <code>{html.escape(str(e)[:200])}</code>"
+        await safe_edit_status(callback.message, err_msg)
     finally:
         if download_data:
             if download_data.get("file_path"):
