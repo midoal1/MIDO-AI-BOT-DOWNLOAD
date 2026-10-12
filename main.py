@@ -16,6 +16,7 @@ from admin import admin_router
 from subscriptions import sub_router
 
 import os
+import aiohttp
 from aiohttp import web
 from aiogram.types import BotCommand
 from database import get_stats
