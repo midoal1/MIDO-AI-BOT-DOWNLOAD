@@ -110,7 +110,9 @@ def _ensure_rustypipe_botguard() -> str | None:
     return None
 
 
-RUSTYPIPE_BG_PATH = _ensure_rustypipe_botguard()
+import threading
+RUSTYPIPE_BG_PATH = shutil.which("rustypipe-botguard")
+threading.Thread(target=_ensure_rustypipe_botguard, daemon=True).start()
 
 # ─── Cookies from Environment Variables ───────────────────
 _cookie_parts = [os.getenv(k, "").strip() for k in ("COOKIES", "YOUTUBE_COOKIES", "INSTAGRAM_COOKIES")]
@@ -178,9 +180,9 @@ def _base_ydl_opts(extra: dict = None, use_cookies: bool = True) -> dict:
         'quiet': True,
         'no_warnings': True,
         'noplaylist': True,
-        'retries': 5,
-        'fragment_retries': 5,
-        'socket_timeout': 30,
+        'retries': 3,
+        'fragment_retries': 3,
+        'socket_timeout': 20,
         'geo_bypass': True,
         'geo_bypass_country': 'US',
         'ignoreerrors': False,
@@ -189,7 +191,7 @@ def _base_ydl_opts(extra: dict = None, use_cookies: bool = True) -> dict:
         'concurrent_fragment_downloads': 4,
         'extractor_args': {
             'youtube': {
-                'player_client': ['tv_samsung', 'mweb', 'web_embedded', 'visionos'],
+                'player_client': ['tv_samsung', 'mweb'],
                 'fetch_pot': ['always'],
             }
         },
@@ -224,9 +226,30 @@ def clean_url(url: str) -> str:
                 if inner.startswith("http"):
                     url = inner
                     parsed = urllib.parse.urlparse(url)
+                    query = urllib.parse.parse_qs(parsed.query)
                     break
+        host = parsed.netloc.lower()
+        # Normalize YouTube links (youtu.be/ID?is=..., youtube.com/shorts/ID?si=..., youtube.com/watch?v=ID&si=...)
+        if "youtu.be" in host:
+            vid = parsed.path.strip("/").split("/")[0]
+            if vid:
+                if "list" in query and query["list"]:
+                    url = f"https://www.youtube.com/watch?v={vid}&list={query['list'][0]}"
+                else:
+                    url = f"https://www.youtube.com/watch?v={vid}"
+        elif "youtube.com" in host:
+            if parsed.path.startswith(("/shorts/", "/live/", "/embed/")):
+                parts = [p for p in parsed.path.strip("/").split("/") if p]
+                if len(parts) >= 2:
+                    url = f"https://www.youtube.com/watch?v={parts[1]}"
+            elif parsed.path == "/watch" and "v" in query and query["v"]:
+                vid = query["v"][0]
+                if "list" in query and query["list"]:
+                    url = f"https://www.youtube.com/watch?v={vid}&list={query['list'][0]}"
+                else:
+                    url = f"https://www.youtube.com/watch?v={vid}"
         # Strip tracking query params from Instagram post/reel links
-        if "instagram.com" in parsed.netloc.lower() and any(
+        elif "instagram.com" in host and any(
             seg in parsed.path for seg in ("/reel/", "/reels/", "/p/", "/tv/")
         ):
             clean_path = parsed.path.replace("/reels/", "/reel/")
@@ -317,9 +340,9 @@ async def _tikwm_info(url: str) -> dict | None:
     return None
 
 
-# ─── YouTube oEmbed Info Fallback ─────────────────────────
+# ─── YouTube oEmbed Info Fast-Path ────────────────────────
 async def _youtube_oembed_info(url: str) -> dict | None:
-    """Fast, unblocked metadata fallback for YouTube links via official oEmbed API."""
+    """Fast, unblocked metadata fetch for YouTube links via official oEmbed API (<0.3s)."""
     if not any(d in url.lower() for d in ("youtube.com", "youtu.be")):
         return None
     try:
@@ -332,13 +355,13 @@ async def _youtube_oembed_info(url: str) -> dict | None:
                         "title": (data.get("title") or "YouTube Video")[:80],
                         "author": data.get("author_name") or "YouTube",
                         "duration": 0,
-                        "platform": "Youtube",
+                        "platform": "YouTube",
                         "url": url,
                         "is_photo": False,
                         "thumbnail": data.get("thumbnail_url"),
                     }
     except Exception as e:
-        logger.debug(f"YouTube oEmbed fallback failed for {url}: {e}")
+        logger.debug(f"YouTube oEmbed fast-path skipped for {url}: {e}")
     return None
 
 
@@ -346,16 +369,22 @@ async def _youtube_oembed_info(url: str) -> dict | None:
 async def extract_info(url: str) -> dict | None:
     url = await resolve_url(url)
 
-    # TikTok fast path
+    # TikTok fast path (<0.5s)
     if "tiktok.com" in url.lower() or "douyin.com" in url.lower():
         res = await _tikwm_info(url)
         if res:
             return res
 
+    # YouTube oEmbed fast path (<0.3s — avoids slow BotGuard/IP blocks just to show the menu card)
+    if any(d in url.lower() for d in ("youtube.com", "youtu.be")):
+        yt_meta = await _youtube_oembed_info(url)
+        if yt_meta:
+            return yt_meta
+
     ydl_opts = _base_ydl_opts({
         'skip_download': True,
         'socket_timeout': 15,
-        'retries': 3,
+        'retries': 2,
     })
 
     def _get(opts):
@@ -385,10 +414,10 @@ async def extract_info(url: str) -> dict | None:
             fallback_opts = _base_ydl_opts({
                 'skip_download': True,
                 'socket_timeout': 15,
-                'retries': 3,
+                'retries': 2,
                 'extractor_args': {
                     'youtube': {
-                        'player_client': ['tv_samsung', 'tv', 'web_embedded', 'mweb', 'tv_downgraded', 'visionos'],
+                        'player_client': ['tv', 'web_embedded', 'tv_downgraded', 'visionos'],
                         'player_skip': ['webpage'],
                         'fetch_pot': ['always'],
                     }
@@ -397,11 +426,6 @@ async def extract_info(url: str) -> dict | None:
             return await loop.run_in_executor(None, lambda: _get(fallback_opts))
         except Exception as fe:
             logger.error(f"Fallback extract_info failed for {url}: {fe}")
-
-    # YouTube oEmbed fallback for title & thumbnail
-    yt_meta = await _youtube_oembed_info(url)
-    if yt_meta:
-        return yt_meta
 
     # Ultimate fallback guarantee: Always return valid metadata container so user receives download card!
     return {
@@ -859,33 +883,35 @@ async def download_audio(url: str) -> dict | None:
     except Exception as e:
         logger.warning(f"Primary audio download error on {url}: {e}")
         _set_error(url, e)
-        try:
-            fallback_opts = _base_ydl_opts({
-                'format': 'bestaudio[filesize<45M]/bestaudio/best',
-                'outtmpl': output_template,
-                'concurrent_fragment_downloads': 4,
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['tv_samsung', 'tv', 'web_embedded', 'mweb', 'tv_downgraded', 'visionos'],
-                        'player_skip': ['webpage'],
-                        'fetch_pot': ['always'],
-                    }
-                }
-            }, use_cookies=False)
-            if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
-                fallback_opts['postprocessors'] = [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '128',
-                }]
-            return await loop.run_in_executor(None, lambda: _extract(fallback_opts))
-        except Exception as fe:
-            logger.error(f"Fallback audio download error on {url}: {fe}")
 
-    # Attempt 3: External Cloud API Fallback (SaveNow / Loader.to v2)
+    # Attempt 2: External Cloud API Fallback (SaveNow / Loader.to v2) — instant bypass when server IP is blocked
     cloud_res = await _savenow_cloud_download(url, audio_only=True)
     if cloud_res:
         return cloud_res
+
+    # Attempt 3: Cookie-free webpage-skip fallback
+    try:
+        fallback_opts = _base_ydl_opts({
+            'format': 'bestaudio[filesize<45M]/bestaudio/best',
+            'outtmpl': output_template,
+            'concurrent_fragment_downloads': 4,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['tv', 'web_embedded', 'tv_downgraded', 'visionos'],
+                    'player_skip': ['webpage'],
+                    'fetch_pot': ['always'],
+                }
+            }
+        }, use_cookies=False)
+        if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
+            fallback_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '128',
+            }]
+        return await loop.run_in_executor(None, lambda: _extract(fallback_opts))
+    except Exception as fe:
+        logger.error(f"Fallback audio download error on {url}: {fe}")
 
     return None
 
@@ -997,7 +1023,19 @@ async def download_video_quality(url: str, quality: str) -> dict | None:
         logger.warning(f"Primary video format download failed for {quality}p on {url}: {e}")
         _set_error(url, e)
 
-    # Attempt 2: Webpage-skip & cookie-free multi-client fallback
+    # Attempt 2: Instagram embed fallback if applicable
+    if "instagram.com" in url.lower():
+        res = await _instagram_embed_download(url)
+        if res:
+            res["requested_quality"] = quality
+            return res
+
+    # Attempt 3: External Cloud API Fallback (SaveNow / Loader.to v2) — works even when server IP is blocked
+    cloud_res = await _savenow_cloud_download(url, quality=quality, audio_only=False)
+    if cloud_res:
+        return cloud_res
+
+    # Attempt 4: Webpage-skip & cookie-free multi-client fallback
     try:
         fallback_opts = _base_ydl_opts({
             'format': fmt_spec,
@@ -1006,7 +1044,7 @@ async def download_video_quality(url: str, quality: str) -> dict | None:
             'merge_output_format': 'mp4',
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['tv_samsung', 'tv', 'web_embedded', 'mweb', 'tv_downgraded', 'visionos'],
+                    'player_client': ['tv', 'web_embedded', 'tv_downgraded', 'visionos'],
                     'player_skip': ['webpage'],
                     'fetch_pot': ['always'],
                 }
@@ -1029,18 +1067,6 @@ async def download_video_quality(url: str, quality: str) -> dict | None:
             return res
     except Exception as e:
         logger.error(f"Fallback video download error on {url}: {e}")
-
-    # Attempt 3: Instagram embed fallback if applicable
-    if "instagram.com" in url.lower():
-        res = await _instagram_embed_download(url)
-        if res:
-            res["requested_quality"] = quality
-            return res
-
-    # Attempt 4: External Cloud API Fallback (SaveNow / Loader.to v2) — works even when server IP is blocked
-    cloud_res = await _savenow_cloud_download(url, quality=quality, audio_only=False)
-    if cloud_res:
-        return cloud_res
 
     return None
 
